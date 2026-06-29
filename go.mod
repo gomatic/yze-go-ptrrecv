@@ -3,7 +3,7 @@ module github.com/gomatic/yze-ptrrecv
 go 1.26.4
 
 require (
-	github.com/gomatic/go-yze v0.3.0
+	github.com/gomatic/go-yze v0.4.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/tools v0.47.0
 )
