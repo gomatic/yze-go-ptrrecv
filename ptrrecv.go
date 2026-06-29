@@ -97,12 +97,19 @@ func check(pass *analysis.Pass, allow map[string]bool, fn *ast.FuncDecl) {
 	if recv == nil || requiresPointer(allow, recv) {
 		return
 	}
-	pass.Reportf(fn.Recv.List[0].Pos(), "pointer receiver on %s should be a value receiver; the type holds no field that requires a pointer", recv.(*types.Named).Obj().Name())
+	pass.Reportf(
+		fn.Recv.List[0].Pos(),
+		"pointer receiver on %s should be a value receiver; the type holds no field that requires a pointer",
+		recv.Obj().Name(),
+	)
 }
 
-// pointerReceiver returns the base type of fn's receiver when fn is a method with
-// a pointer receiver, and nil otherwise.
-func pointerReceiver(pass *analysis.Pass, fn *ast.FuncDecl) types.Type {
+// pointerReceiver returns the named base type of fn's receiver when fn is a
+// method with a pointer receiver, and nil otherwise. The receiver type is
+// unaliased first: since Go 1.23 a receiver written through a type alias (e.g.
+// "type Alias = Inner; func (Alias) M()") resolves to *types.Alias, so a bare
+// *types.Named assertion would panic on otherwise valid code.
+func pointerReceiver(pass *analysis.Pass, fn *ast.FuncDecl) *types.Named {
 	if fn.Recv == nil {
 		return nil
 	}
@@ -110,7 +117,8 @@ func pointerReceiver(pass *analysis.Pass, fn *ast.FuncDecl) types.Type {
 	if !ok {
 		return nil
 	}
-	return pass.TypesInfo.TypeOf(star.X)
+	named, _ := types.Unalias(pass.TypesInfo.TypeOf(star.X)).(*types.Named)
+	return named
 }
 
 // requiresPointer reports whether t is a struct transitively containing a no-copy

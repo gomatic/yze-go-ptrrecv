@@ -98,7 +98,7 @@ func (s *Scalar) Bump() { *s++ } // want `pointer receiver on Scalar should be a
 // flagged.
 type Box[T any] struct{ v T }
 
-func (b *Box[T]) Set(x T) { b.v = x } // want `pointer receiver on Box should be a value receiver; the type holds no field that requires a pointer`
+func (b *Box[T]) Touch() { _ = b.v } // want `pointer receiver on Box should be a value receiver; the type holds no field that requires a pointer`
 
 // GuardedBox is a generic type holding a sync.Mutex, so a pointer receiver is
 // allowed.
@@ -108,6 +108,23 @@ type GuardedBox[T any] struct {
 }
 
 func (g *GuardedBox[T]) Set(x T) { g.mu.Lock(); g.v = x; g.mu.Unlock() }
+
+// AliasInner is a plain struct with no no-copy field. AliasPlain aliases it, and
+// a pointer-receiver method declared through the alias resolves to *types.Alias
+// (Go 1.23+); it must be unaliased to the underlying named type rather than
+// crashing, and the diagnostic names that underlying type.
+type AliasInner struct{ x int }
+
+type AliasPlain = AliasInner
+
+func (a *AliasPlain) Touch() { _ = a.x } // want `pointer receiver on AliasInner should be a value receiver; the type holds no field that requires a pointer`
+
+// AliasGuarded aliases a mutex-holding struct; resolving the alias must still
+// find the no-copy field through the underlying type, so the pointer receiver is
+// allowed.
+type AliasGuarded = Guarded
+
+func (g *AliasGuarded) Poke() { g.mu.Lock(); g.mu.Unlock() }
 
 // plainFunc is not a method.
 func plainFunc() {}
