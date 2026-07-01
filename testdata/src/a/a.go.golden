@@ -87,7 +87,7 @@ type SliceGuarded struct {
 	mus []sync.Mutex
 }
 
-func (s *SliceGuarded) Bad() { _ = s.mus } // want `pointer receiver on SliceGuarded should be a value receiver; the type holds no field that requires a pointer`
+func (s SliceGuarded) Bad() { _ = s.mus } // want `pointer receiver on SliceGuarded should be a value receiver; the type holds no field that requires a pointer`
 
 // Scalar is a non-struct named type; its pointer-receiver method is flagged.
 type Scalar int
@@ -98,7 +98,7 @@ func (s *Scalar) Bump() { *s++ } // want `pointer receiver on Scalar should be a
 // flagged.
 type Box[T any] struct{ v T }
 
-func (b *Box[T]) Touch() { _ = b.v } // want `pointer receiver on Box should be a value receiver; the type holds no field that requires a pointer`
+func (b Box[T]) Touch() { _ = b.v } // want `pointer receiver on Box should be a value receiver; the type holds no field that requires a pointer`
 
 // GuardedBox is a generic type holding a sync.Mutex, so a pointer receiver is
 // allowed.
@@ -117,7 +117,7 @@ type AliasInner struct{ x int }
 
 type AliasPlain = AliasInner
 
-func (a *AliasPlain) Touch() { _ = a.x } // want `pointer receiver on AliasInner should be a value receiver; the type holds no field that requires a pointer`
+func (a AliasPlain) Touch() { _ = a.x } // want `pointer receiver on AliasInner should be a value receiver; the type holds no field that requires a pointer`
 
 // AliasGuarded aliases a mutex-holding struct; resolving the alias must still
 // find the no-copy field through the underlying type, so the pointer receiver is
@@ -133,7 +133,7 @@ type Reader struct{ n int }
 
 func (r Reader) get() int { return r.n }
 
-func (r *Reader) Len() int { // want `pointer receiver on Reader should be a value receiver; the type holds no field that requires a pointer`
+func (r Reader) Len() int { // want `pointer receiver on Reader should be a value receiver; the type holds no field that requires a pointer`
 	i := 0
 	i++
 	local := r.n
@@ -144,7 +144,7 @@ func (r *Reader) Len() int { // want `pointer receiver on Reader should be a val
 	return r.get() + local
 }
 
-func (r *Reader) Sum(xs []int) int { // want `pointer receiver on Reader should be a value receiver`
+func (r Reader) Sum(xs []int) int { // want `pointer receiver on Reader should be a value receiver`
 	total := 0
 	i := 0
 	for i = range xs {
@@ -212,13 +212,13 @@ func (c *Chained) Touch() { c.bump() } // want `pointer receiver on Chained shou
 // receiver, which leaves its own receiver copy-safe; fixable.
 type Delegator struct{ n int }
 
-func (d *Delegator) Poke(c *Chained) { c.bump() } // want `pointer receiver on Delegator should be a value receiver`
+func (d Delegator) Poke(c *Chained) { c.bump() } // want `pointer receiver on Delegator should be a value receiver`
 
 // Unnamed has no receiver identifier, so nothing in the body can reach the
 // receiver; fixable.
 type Unnamed struct{ n int }
 
-func (*Unnamed) Touch() {} // want `pointer receiver on Unnamed should be a value receiver; the type holds no field that requires a pointer`
+func (Unnamed) Touch() {} // want `pointer receiver on Unnamed should be a value receiver; the type holds no field that requires a pointer`
 
 // plainFunc is not a method.
 func plainFunc() {}

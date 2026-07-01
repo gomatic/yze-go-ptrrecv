@@ -10,8 +10,8 @@ import (
 	ptrrecv "github.com/gomatic/yze-go-ptrrecv"
 )
 
-func TestUnjustifiedPointerReceiversAreReported(t *testing.T) {
-	analysistest.Run(t, analysistest.TestData(), ptrrecv.Analyzer, "a")
+func TestUnjustifiedPointerReceiversAreReportedAndSafeOnesFixed(t *testing.T) {
+	analysistest.RunWithSuggestedFixes(t, analysistest.TestData(), ptrrecv.Analyzer, "a")
 }
 
 func TestRegistrationIsWellFormed(t *testing.T) {

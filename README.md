@@ -8,6 +8,7 @@ The rule is intentionally narrow: only a transitively-uncopyable field justifies
 
 - **Rule:** `yze/ptrrecv`
 - **No-copy types:** 16 baked-in standard-library types, extensible at runtime via the `-allow` flag (comma-separated fully-qualified `pkgpath.Name` entries).
+- **Suggested fix:** the diagnostic carries a "change to a value receiver" fix (deleting the receiver's `*`) only when the rewrite is provably behavior-preserving: the body never assigns through the receiver (including `++`/`--`, index/field chains, and range assignment), never takes the address of the receiver or anything reachable through it, never calls a pointer-receiver method on the receiver, and never mentions the receiver bare (which would change its pointer-typed semantics). Since the yze driver applies fixes to packages loaded without test files, dropping the `*` is chosen because it only widens the method set — unseen callers keep compiling — and the mutation analysis guarantees no copy is silently mutated. When in doubt the diagnostic is reported without a fix.
 - **Binary:** `cmd/yze-go-ptrrecv` runs it standalone (`text`/`-json`, and as a `go vet -vettool`).
 
 Built on the [`go-yze`](https://github.com/gomatic/go-yze) framework.
