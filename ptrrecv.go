@@ -65,7 +65,7 @@ var Registration = goyze.Registration{
 
 // run reports each unjustified pointer-receiver method.
 func run(pass *analysis.Pass) (any, error) {
-	allow := buildAllow(allowExtra)
+	allow := buildAllow(allowCSV(allowExtra))
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	insp.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
 		check(pass, allow, n.(*ast.FuncDecl))
@@ -73,8 +73,12 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
+// allowCSV is the raw comma-separated -allow flag value listing extra
+// fully-qualified no-copy types.
+type allowCSV string
+
 // buildAllow merges the baked-in no-copy types with the configured extras.
-func buildAllow(extra string) map[string]bool {
+func buildAllow(extra allowCSV) map[string]bool {
 	allow := make(map[string]bool, len(noCopyTypes))
 	for name := range noCopyTypes {
 		allow[name] = true
@@ -85,11 +89,11 @@ func buildAllow(extra string) map[string]bool {
 	return allow
 }
 
-func splitNonEmpty(value string) []string {
+func splitNonEmpty(value allowCSV) []string {
 	if value == "" {
 		return nil
 	}
-	return strings.Split(value, ",")
+	return strings.Split(string(value), ",")
 }
 
 // check reports a pointer-receiver method whose type needs no pointer, attaching
