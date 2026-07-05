@@ -235,3 +235,94 @@ func (s *Setting) Set(v string) error { s.v = v; return nil }
 
 // Get is an ordinary pointer-receiver method on a lock-free type: reported.
 func (s *Setting) Get() string { return s.v } // want `pointer receiver`
+
+// MuAlias aliases sync.Mutex; the no-copy check must resolve the alias, so
+// AliasField's pointer receiver is allowed.
+type MuAlias = sync.Mutex
+
+type AliasField struct{ mu MuAlias }
+
+func (a *AliasField) Touch() { a.mu.Lock(); a.mu.Unlock() }
+
+// UintptrCounter holds a sync/atomic.Uintptr, so a pointer receiver is allowed.
+type UintptrCounter struct{ n atomic.Uintptr }
+
+func (u *UintptrCounter) Touch() { u.n.Add(1) }
+
+// noCopy is the vet copylocks marker idiom: a zero-size type whose pointer
+// method set has nullary Lock and Unlock. Satisfying that shape requires the
+// pointer receivers, so its own methods are exempt.
+type noCopy struct{}
+
+func (n *noCopy) Lock() {}
+
+func (n *noCopy) Unlock() {}
+
+// Marked holds a noCopy marker field, so its pointer receiver is allowed.
+type Marked struct {
+	_ noCopy
+	n int
+}
+
+func (m *Marked) Bump() { m.n++ }
+
+// ValueLocker's Lock/Unlock take VALUE receivers, so the value itself is a
+// Locker and copying it is fine (vet copylocks agrees); its pointer-receiver
+// method stays flagged and fixable.
+type ValueLocker struct{}
+
+func (ValueLocker) Lock() {}
+
+func (ValueLocker) Unlock() {}
+
+func (v *ValueLocker) Touch() {} // want `pointer receiver on ValueLocker should be a value receiver`
+
+// Outer calls a pointer-receiver method on its FIELD, one selector level deep;
+// the rewrite would make bump mutate a copy of the field, so no fix.
+type Outer struct{ c Chained }
+
+func (o *Outer) Bump() { o.c.bump() } // want `pointer receiver on Outer should be a value receiver`
+
+// Slots reaches a pointer-receiver method through an index expression; no fix.
+type Slots struct{ cs []Chained }
+
+func (s *Slots) Poke() { s.cs[0].bump() } // want `pointer receiver on Slots should be a value receiver`
+
+// Cell gives Grid and IdxEsc a value-receiver method at chain depth.
+type Cell struct{ n int }
+
+func (c Cell) Get() int { return c.n }
+
+// Grid chains through a safe index expression to a value-receiver method;
+// nothing can mutate the receiver, so the fix is attached.
+type Grid struct {
+	cells []Cell
+	k     int
+}
+
+func (g *Grid) First() int { return g.cells[g.k].Get() } // want `pointer receiver on Grid should be a value receiver`
+
+// deref lets IdxEsc leak an address from inside an index expression.
+func deref(p *int) int { return *p }
+
+// IdxEsc's chain links are safe, but the INDEX expression takes the address of
+// a receiver field; the pointer could observe mutation, so no fix.
+type IdxEsc struct {
+	cells []Cell
+	k     int
+}
+
+func (e *IdxEsc) Grab() int { return e.cells[deref(&e.k)].Get() } // want `pointer receiver on IdxEsc should be a value receiver`
+
+// Deref reads a field through an explicit receiver deref, which would not
+// compile after the rewrite; no fix.
+type Deref struct{ n int }
+
+func (d *Deref) Val() int { return (*d).n } // want `pointer receiver on Deref should be a value receiver`
+
+// TwoErr's Set has a well-known decoder NAME but not the contract shape: one
+// result group declaring TWO error results is not "the sole result is error",
+// so it stays reported.
+type TwoErr struct{ v string }
+
+func (t *TwoErr) Set(v string) (a, b error) { t.v = v; return nil, nil } // want `pointer receiver on TwoErr`

@@ -11,7 +11,7 @@ import (
 )
 
 func TestUnjustifiedPointerReceiversAreReportedAndSafeOnesFixed(t *testing.T) {
-	analysistest.RunWithSuggestedFixes(t, analysistest.TestData(), ptrrecv.Analyzer, "a")
+	analysistest.RunWithSuggestedFixes(t, analysistest.TestData(), ptrrecv.Analyzer, "a", "c")
 }
 
 func TestRegistrationIsWellFormed(t *testing.T) {

@@ -37,7 +37,7 @@ func fixable(pass *analysis.Pass, fn *ast.FuncDecl) bool {
 	if recv == nil {
 		return true
 	}
-	return bodySafe(pass.TypesInfo, recv, fn.Body)
+	return nodeSafe(pass.TypesInfo, recv, fn.Body)
 }
 
 // receiverObject resolves fn's receiver identifier to its declared object, or
@@ -50,11 +50,12 @@ func receiverObject(pass *analysis.Pass, fn *ast.FuncDecl) types.Object {
 	return pass.TypesInfo.Defs[names[0]]
 }
 
-// bodySafe walks the method body and reports whether every use of the receiver
-// keeps the value-receiver rewrite behavior-preserving.
-func bodySafe(info *types.Info, recv types.Object, body *ast.BlockStmt) bool {
+// nodeSafe walks a subtree (the method body, or an index expression inside a
+// receiver-rooted chain) and reports whether every use of the receiver keeps
+// the value-receiver rewrite behavior-preserving.
+func nodeSafe(info *types.Info, recv types.Object, root ast.Node) bool {
 	safe := true
-	ast.Inspect(body, func(n ast.Node) bool {
+	ast.Inspect(root, func(n ast.Node) bool {
 		isSafe, shouldDescend := visit(info, recv, n)
 		safe = safe && isSafe
 		return safe && shouldDescend
@@ -114,16 +115,38 @@ func rangeSafe(info *types.Info, recv types.Object, r *ast.RangeStmt) bool {
 	return !rootIsRecv(info, recv, r.Key) && !rootIsRecv(info, recv, r.Value)
 }
 
-// selectorSafe validates a selector on the receiver: field reads and
-// value-receiver method calls are safe; a pointer-receiver method call may
-// mutate the receiver through its own receiver, so it is not. A safe selector
-// prunes descent so the receiver identifier under it is not re-flagged as a
-// bare use.
+// selectorSafe validates a selector whose chain is rooted at the receiver by
+// checking the ENTIRE chain at once (chainSafe) — so a pointer-receiver method
+// selected at ANY depth (`recv.f.Inc`, `recv.xs[i].Inc`) is seen, not just one
+// selected directly on the receiver. A receiver-rooted chain prunes descent so
+// the receiver identifier under it is not re-flagged as a bare use; a selector
+// not rooted at the receiver is left to the normal walk.
 func selectorSafe(info *types.Info, recv types.Object, sel *ast.SelectorExpr) (isSafe, shouldDescend bool) {
-	if !isRecv(info, recv, sel.X) {
+	if !rootIsRecv(info, recv, sel) {
 		return true, true
 	}
-	return !selectsPointerMethod(info, sel), false
+	return chainSafe(info, recv, sel), false
+}
+
+// chainSafe reports whether a receiver-rooted selector/index chain keeps the
+// rewrite behavior-preserving: no link may select a pointer-receiver method
+// (which could mutate the receiver through its own receiver), every index
+// expression's content must itself be safe, and the chain must reach the
+// receiver identifier through those links alone. Anything else in the chain —
+// an explicit `*recv` deref — is conservatively unsafe: a missing fix is fine,
+// a wrong fix is not.
+func chainSafe(info *types.Info, recv types.Object, e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return chainSafe(info, recv, x.X)
+	case *ast.SelectorExpr:
+		return !selectsPointerMethod(info, x) && chainSafe(info, recv, x.X)
+	case *ast.IndexExpr:
+		return nodeSafe(info, recv, x.Index) && chainSafe(info, recv, x.X)
+	case *ast.Ident:
+		return true
+	}
+	return false
 }
 
 // selectsPointerMethod reports whether sel selects a method declared with a
