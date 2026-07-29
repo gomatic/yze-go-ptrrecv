@@ -1,0 +1,6 @@
+# Soft-finding baselines: the number of non-gating findings this repository
+# currently carries, per rule. This is a RATCHET — the counts may only fall.
+# Raising one is a deliberate, reviewable decision; lowering one is progress.
+# A rule absent here is permitted zero.
+soft-baseline:
+  yze/invariant: 5
