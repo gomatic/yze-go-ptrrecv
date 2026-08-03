@@ -91,3 +91,30 @@ type T struct{ in inner }`, want: true, why: "a nested struct field"},
 			"requiresPointer(%s): %s", tc.src, tc.why)
 	}
 }
+
+// TestIsTypeParamMakesRequiresPointerConservative names the type-parameter
+// claim: a type parameter must be treated as uncopyable, because its
+// instantiation may be no-copy machinery — Box[sync.Mutex] — and rewriting the
+// receiver to a value would copy a mutex, a data race the author never wrote.
+// The negative half keeps the rule honest: a GENERIC type whose fields never
+// store a type parameter is copyable at every instantiation and stays judged.
+func TestIsTypeParamMakesRequiresPointerConservative(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, requiresPointer(nil, fieldType(t, "type T[P any] struct{ v P }")),
+		"a type-parameter field may be instantiated no-copy")
+	assert.False(t, requiresPointer(nil, typeOf(t, "type box[P any] struct{ v P }\ntype T = box[int]")),
+		"an INSTANTIATED generic is judged by its instantiation, not conservatively")
+	assert.False(t, requiresPointer(nil, fieldType(t, "type T[P any] struct{ v int }")),
+		"a generic type with no type-parameter field stays copyable")
+}
+
+// fieldType type-checks src, which must declare a struct type `T`, and returns
+// the type of T's sole field — the shape under judgement.
+func fieldType(t *testing.T, src string) types.Type {
+	t.Helper()
+	st, ok := typeOf(t, src).Underlying().(*types.Struct)
+	require.True(t, ok, "the fixture's T must be a struct")
+	require.Equal(t, 1, st.NumFields(), "the fixture's T must have one field")
+	return st.Field(0).Type()
+}

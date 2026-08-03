@@ -38,13 +38,25 @@ var noCopyTypes = map[string]bool{
 var allowExtra string
 
 // requiresPointer reports whether t must not be copied: it is itself a no-copy
-// type — allow-listed or satisfying the vet copylocks locker shape — or it
-// transitively holds one through struct fields and array elements.
+// type — allow-listed or satisfying the vet copylocks locker shape — a type
+// parameter (whose instantiation may be any of those), or it transitively
+// holds one through struct fields and array elements.
 func requiresPointer(allow map[string]bool, t types.Type) bool {
-	if isNoCopy(allow, t) || lockerShape(t) {
+	if isNoCopy(allow, t) || lockerShape(t) || isTypeParam(t) {
 		return true
 	}
 	return componentsRequirePointer(allow, t)
+}
+
+// isTypeParam reports whether t is a type parameter. An unconstrained (or
+// merely unknowable) type parameter may be instantiated with no-copy machinery
+// — Box[sync.Mutex] — and the --fix path would rewrite the receiver into one
+// the compiler happily copies, a data race the author never wrote. The pointer
+// receiver conservatively stands, the same line valuector draws for
+// type-parameter fields in constructed types.
+func isTypeParam(t types.Type) bool {
+	_, ok := types.Unalias(t).(*types.TypeParam)
+	return ok
 }
 
 // componentsRequirePointer descends into the component types whose copy copies

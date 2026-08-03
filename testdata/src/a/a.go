@@ -94,11 +94,24 @@ type Scalar int
 
 func (s *Scalar) Bump() { *s++ } // want `pointer receiver on Scalar should be a value receiver; the type holds no field that requires a pointer`
 
-// Box is a generic type with no no-copy field; its pointer-receiver method is
-// flagged.
+// Box holds a type-parameter field, which may be instantiated with a no-copy
+// type (Box[sync.Mutex] must not be copied), so its pointer receiver
+// conservatively stands.
 type Box[T any] struct{ v T }
 
-func (b *Box[T]) Touch() { _ = b.v } // want `pointer receiver on Box should be a value receiver; the type holds no field that requires a pointer`
+func (b *Box[T]) Touch() { _ = b.v }
+
+// GenericFree is generic but stores no type-parameter field, so every
+// instantiation is copyable and its pointer-receiver method stays flagged.
+type GenericFree[T any] struct{ n int }
+
+func (g *GenericFree[T]) Peek() { _ = g.n } // want `pointer receiver on GenericFree should be a value receiver; the type holds no field that requires a pointer`
+
+// Wrapped reaches a type parameter TRANSITIVELY through a generic field, so
+// its pointer receiver stands too.
+type Wrapped[T any] struct{ b Box[T] }
+
+func (w *Wrapped[T]) Touch() { _ = w.b }
 
 // GuardedBox is a generic type holding a sync.Mutex, so a pointer receiver is
 // allowed.
