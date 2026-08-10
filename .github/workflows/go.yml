@@ -32,7 +32,7 @@ on:
       - ".standards.yaml"
       - ".github/workflows/go.yml"
   schedule:
-    - cron: "0 2 * * 1"
+    - cron: "55 23 9 * *"
   workflow_dispatch:
 concurrency:
   group: go-${{ github.ref }}
@@ -67,7 +67,7 @@ jobs:
           # org's (or repo's) Actions variables, so it never enters a public
           # repository. Unset simply leaves that half of the rule inert, which
           # is why a fork or a stranger's checkout still gates cleanly.
-          YZE_WFPIN_OWNERS: ${{ vars.YZE_WFPIN_OWNERS }}
+          YZE_WFPOLICY_OWNERS: ${{ vars.YZE_WFPOLICY_OWNERS }}
 
   # Early warning, NOT a gate. The `go` job above is the gate, and it pins the
   # toolchain via the ci/go@v2 image so every repo compiles identically. This job
