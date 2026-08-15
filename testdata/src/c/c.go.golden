@@ -14,4 +14,4 @@ type error struct{ msg string }
 // Fake carries a Set method with the decoder name but the shadowed result type.
 type Fake struct{ v string }
 
-func (f *Fake) Set(v string) error { return error{msg: f.v} } // want `pointer receiver on Fake`
+func (f Fake) Set(v string) error { return error{msg: f.v} } // want `pointer receiver on Fake`
