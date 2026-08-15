@@ -99,10 +99,25 @@ func parseAllowList(value allowValue) ([]allowEntry, error) {
 func parseAllowEntry(field allowField) (allowEntry, error) {
 	entry := allowEntry(strings.TrimSpace(string(field)))
 	path, name, isQualified := splitQualified(entry)
-	if !isQualified || !token.IsIdentifier(string(name)) || strings.ContainsAny(string(path), " \t") {
+	if !isQualified || !token.IsIdentifier(string(name)) || !isImportPath(path) {
 		return "", ErrInvalidAllowEntry.With(nil, "entry", string(field))
 	}
 	return allowEntry(string(path) + "." + string(name)), nil
+}
+
+// isImportPath reports whether path could be one: every segment is non-empty,
+// carries no whitespace, and is not made only of dots. It does not decide that
+// the path EXISTS — "main.Pool" is still accepted, and a main package's path is
+// its module path, never "main" — so an entry that matches no type in the run is
+// still possible. Catching that needs the run to report an entry nothing
+// matched, which nothing here does.
+func isImportPath(path packagePath) bool {
+	for _, segment := range strings.Split(string(path), "/") {
+		if segment == "" || strings.ContainsAny(segment, " \t\r\n") || strings.Trim(segment, ".") == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // splitQualified splits a fully-qualified type name at its final dot, which is

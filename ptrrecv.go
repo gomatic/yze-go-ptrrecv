@@ -118,7 +118,7 @@ var Registration = goyze.Registration{
 
 // run reports each unjustified pointer-receiver method.
 func run(pass *analysis.Pass) (any, error) {
-	judge := judgement{allow: configuredAllow.set(), own: pass.Pkg}
+	judge := judgement{allow: configuredAllow.set(), own: pass.Pkg, module: modulePath(pass)}
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	insp.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
 		check(pass, judge, n.(*ast.FuncDecl))

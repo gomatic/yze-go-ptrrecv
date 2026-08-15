@@ -79,6 +79,8 @@ func visit(info *types.Info, recv types.Object, n ast.Node) (isSafe, shouldDesce
 		return addrSafe(info, recv, x), true
 	case *ast.RangeStmt:
 		return rangeSafe(info, recv, x), true
+	case *ast.SliceExpr:
+		return sliceSafe(info, recv, x), true
 	case *ast.SelectorExpr:
 		return selectorSafe(info, recv, x)
 	case *ast.Ident:
@@ -104,6 +106,34 @@ func lhsSafe(info *types.Info, recv types.Object, lhs []ast.Expr) bool {
 // pointer could outlive the call and observe or apply mutation.
 func addrSafe(info *types.Info, recv types.Object, x *ast.UnaryExpr) bool {
 	return x.Op != token.AND || !rootIsRecv(info, recv, x.X)
+}
+
+// sliceSafe reports whether a slice expression avoids slicing an ARRAY reached
+// through the receiver. Slicing an addressable array is an implicit address-of:
+// the slice aliases the array's own storage, so after the rewrite it aliases a
+// COPY, and every write through it lands nowhere while every read sees stale
+// bytes. `copy(recv.buf[:], src)` and `s := recv.buf[:]; s[0] = 0` both become
+// silent no-ops that go vet has nothing to say about — measured on image/gif's
+// own decoder, whose (*decoder).readBlock fills d.tmp[:n] for other methods to
+// read and whose test suite fails once the receiver is a value.
+func sliceSafe(info *types.Info, recv types.Object, x *ast.SliceExpr) bool {
+	if !rootIsRecv(info, recv, x.X) {
+		return true
+	}
+	return !slicesAnArray(info.TypeOf(x.X))
+}
+
+// slicesAnArray reports whether slicing t takes an address. An array stores its
+// elements inline, so a slice of one points into the array itself; a slice or a
+// string is already a header over storage every copy shares, so slicing one
+// changes nothing. A type the pass could not resolve is treated as an array,
+// because a missing fix is fine and a wrong one is not.
+func slicesAnArray(t types.Type) bool {
+	if t == nil {
+		return true
+	}
+	_, isArray := t.Underlying().(*types.Array)
+	return isArray
 }
 
 // rangeSafe reports whether a range statement avoids assigning its iteration

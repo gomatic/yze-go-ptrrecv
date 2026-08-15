@@ -30,6 +30,13 @@ func TestParseAllowListTrimsEveryEntry(t *testing.T) {
 	entries, err = parseAllowList(allowValue(""))
 	require.NoError(t, err)
 	assert.Nil(t, entries, "an unset flag is no entries, not one empty entry")
+
+	entries, err = parseAllowList(allowValue("main.Pool"))
+	require.NoError(t, err)
+	assert.Equal(t, []allowEntry{"main.Pool"}, entries,
+		"a syntactically valid path is accepted even when nothing in the run has it — "+
+			"a main package's path is its module path, never \"main\", so this exempts "+
+			"nothing, and catching that needs the run to report an entry nothing matched")
 }
 
 // TestParseAllowListRefusesAnEntryItCannotHonour names the refusal. An entry
@@ -50,12 +57,39 @@ func TestParseAllowListRefusesAnEntryItCannotHonour(t *testing.T) {
 		{value: "example.com/x.Not A Name", why: "a type name is an identifier"},
 		{value: "example com/x.Plain", why: "and an import path holds no spaces"},
 		{value: "example.com/x.a/b", why: "the last dot is the separator, so this names no identifier"},
+		{value: "..Pool", why: "a path segment made only of dots is no package"},
+		{value: ".....Pool", why: "however many dots it is made of"},
+		{value: "/.Pool", why: "and an empty segment is no package either"},
+		{value: "example.com//x.Pool", why: "wherever the empty segment falls"},
+		{value: "exam\nple.com/x.Pool", why: "an import path holds no newline"},
 	} {
 		_, err := parseAllowList(allowValue(tc.value))
 		require.Error(t, err, "%q must be refused: %s", tc.value, tc.why)
 		assert.True(t, errors.Is(err, ErrInvalidAllowEntry),
 			"%q must be refused with the sentinel a caller can match, got %v", tc.value, err)
 	}
+}
+
+// TestIsImportPathRefusesASegmentNoPackageCanHave names the path half of the
+// check. The name half is an identifier and go/token decides it; the path half
+// has no such decider, and before this every one of these was accepted and
+// exempted nothing. It is deliberately not a claim that the path EXISTS —
+// "main.Pool" passes and matches nothing, which needs the run to report an
+// entry nothing matched, and nothing here does that.
+func TestIsImportPathRefusesASegmentNoPackageCanHave(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, isImportPath("example.com/x"), "a domain and a segment")
+	assert.True(t, isImportPath("bufio"), "a standard-library path is one segment")
+	assert.True(t, isImportPath("main"), "and this is syntactically one too, though nothing has it")
+
+	assert.False(t, isImportPath(""), "nothing is not a path")
+	assert.False(t, isImportPath(".."), "nor is a segment made only of dots")
+	assert.False(t, isImportPath("...."), "however many of them")
+	assert.False(t, isImportPath("/"), "nor one that is empty")
+	assert.False(t, isImportPath("example.com//x"), "wherever the empty segment falls")
+	assert.False(t, isImportPath("example.com/x y"), "and a path holds no whitespace")
+	assert.False(t, isImportPath("exam\nple.com/x"), "of any kind")
 }
 
 // TestAllowListSetIsTheFlagAndTheLookup names what the flag.Value does with a

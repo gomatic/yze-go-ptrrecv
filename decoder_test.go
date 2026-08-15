@@ -148,6 +148,33 @@ func TestDecoderContractsCoversTheStandardDecodeInterfaces(t *testing.T) {
 	}
 }
 
+// TestScanIsTwoStandardInterfacesAndUnmarshalYAMLIsThree names the claim anyOf
+// carries: one method NAME can belong to several interfaces, and encoding only
+// the first turns every implementation of the others into a finding. Scan is
+// database/sql.Scanner AND fmt.Scanner, whose ScanState/rune signature shares
+// nothing with it but the name; UnmarshalYAML has yaml.v2's callback, yaml.v3's
+// *Node, and goccy/go-yaml's []byte.
+func TestScanIsTwoStandardInterfacesAndUnmarshalYAMLIsThree(t *testing.T) {
+	t.Parallel()
+
+	pass, file := checkedPass(t, `package p
+import "fmt"
+type T struct{ n int }
+func (t *T) Scan(state fmt.ScanState, verb rune) error { return nil }
+func (t *T) UnmarshalYAML(b []byte) error { return nil }
+func (t *T) ScanWrongVerb(state fmt.ScanState, verb string) error { return nil }
+`)
+	assert.True(t, decoderMethod(pass, methodNamed(t, file, methodScan)),
+		"fmt.Scanner's Scan writes into the receiver exactly as sql.Scanner's does")
+	assert.True(t, decoderMethod(pass, methodNamed(t, file, methodUnmarshalYAML)),
+		"goccy/go-yaml's BytesUnmarshaler is a published UnmarshalYAML")
+
+	wrong := methodNamed(t, file, "ScanWrongVerb")
+	wrong.Name.Name = methodScan
+	assert.False(t, decoderMethod(pass, wrong),
+		"the verb is a rune, and a ScanState with anything else implements nothing")
+}
+
 // TestIsYAMLNodeMatchesTheDecoderThatIsNotInTheStandardLibrary names the one
 // parameter check that cannot be written against a real import: yaml.v3's
 // UnmarshalYAML takes *yaml.Node, and the YAML decoder is a module away.

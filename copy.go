@@ -4,6 +4,8 @@ import (
 	"go/token"
 	"go/types"
 	"strings"
+
+	"golang.org/x/tools/go/analysis"
 )
 
 // Deciding whether a type must not be copied, which is what makes a pointer
@@ -31,8 +33,9 @@ type typeName string
 // allow-list, and the package under analysis (which is never stdlib, whatever
 // its import path looks like).
 type judgement struct {
-	allow allowSet
-	own   *types.Package
+	allow  allowSet
+	own    *types.Package
+	module packagePath
 }
 
 // requiresPointer reports whether t must not be copied: it is itself an
@@ -68,47 +71,28 @@ func (j judgement) stdlibNoCopy(t types.Type) bool {
 	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg() == j.own {
 		return false
 	}
-	if !stdlibPath(packagePath(named.Obj().Pkg().Path())) {
+	if !j.isStdlib(packagePath(named.Obj().Pkg().Path())) {
 		return false
 	}
 	return types.NewMethodSet(types.NewPointer(named)).Len() > 0 &&
 		types.NewMethodSet(named).Len() == 0
 }
 
-// foreignRepresentation reports whether t's underlying struct IS another
-// package's representation: a field that is unexported and declared in a
-// standard-library package is only reachable by DEFINING a type over that
-// package's type — `type MyBuf bytes.Buffer` — which copies the machinery and
-// leaves none of the methods behind for stdlibNoCopy to read.
-//
-// Only a type declared HERE is asked: a foreign type's own struct always holds
-// its own unexported fields, and whether THAT one may be copied is the method
-// set's question, not this one. A struct written here has its own package's
-// fields, so nothing ordinary matches; a defined-over type whose fields are all
-// EXPORTED (go/token.Position) is copyable and stays judged, because nothing
-// about it was hidden in the first place.
-func (j judgement) foreignRepresentation(t types.Type) bool {
-	named, ok := types.Unalias(t).(*types.Named)
-	if !ok || named.Obj().Pkg() != j.own {
+// isStdlib reports whether a path is the standard library's. It is not enough to
+// ask stdlibPath: a module path is a domain by convention and not by rule, and
+// `go mod init myapp` produces one that reads exactly like the standard library
+// to every package in it but the one under analysis. Excluding the module closes
+// a silent, undocumented exemption an author reaches by naming their module.
+func (j judgement) isStdlib(path packagePath) bool {
+	if j.module != "" && underModule(path, j.module) {
 		return false
 	}
-	st, ok := named.Underlying().(*types.Struct)
-	if !ok {
-		return false
-	}
-	for i := range st.NumFields() {
-		if j.isForeignField(st.Field(i)) {
-			return true
-		}
-	}
-	return false
+	return stdlibPath(path)
 }
 
-// isForeignField reports whether a struct field is unexported and declared in a
-// standard-library package other than the one under analysis.
-func (j judgement) isForeignField(field *types.Var) bool {
-	pkg := field.Pkg()
-	return !field.Exported() && pkg != nil && pkg != j.own && stdlibPath(packagePath(pkg.Path()))
+// underModule reports whether an import path is the module's own or inside it.
+func underModule(path, module packagePath) bool {
+	return path == module || strings.HasPrefix(string(path), string(module)+"/")
 }
 
 // stdlibPath reports whether an import path is a standard-library one: its
@@ -119,6 +103,17 @@ func (j judgement) isForeignField(field *types.Var) bool {
 func stdlibPath(path packagePath) bool {
 	first, _, _ := strings.Cut(string(path), "/")
 	return !strings.Contains(first, ".")
+}
+
+// modulePath is the path of the module under analysis, or empty when the driver
+// reports none — a GOPATH-style fixture has no module at all. The yze driver
+// asks for it (go-yze's driver_checker.go requests NeedModule) precisely so an
+// analyzer can tell the module's own packages from the standard library's.
+func modulePath(pass *analysis.Pass) packagePath {
+	if pass.Module == nil {
+		return ""
+	}
+	return packagePath(pass.Module.Path)
 }
 
 // isTypeParam reports whether t is a type parameter. An unconstrained (or

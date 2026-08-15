@@ -34,20 +34,22 @@ type contract func(*types.Tuple) bool
 //	GobDecode([]byte) error                                encoding/gob.GobDecoder
 //	UnmarshalTOML(any) error                               BurntSushi/toml.Unmarshaler
 //	Scan(any) error                                        database/sql.Scanner
+//	Scan(fmt.ScanState, rune) error                        fmt.Scanner
 //	Set(string) error                                      flag.Value
 //	UnmarshalXML(*xml.Decoder, xml.StartElement) error     encoding/xml.Unmarshaler
 //	UnmarshalYAML(func(any) error) error                   gopkg.in/yaml.v2
 //	UnmarshalYAML(*yaml.Node) error                        gopkg.in/yaml.v3
+//	UnmarshalYAML([]byte) error                            goccy/go-yaml.BytesUnmarshaler
 var decoderContracts = map[string]contract{
 	methodUnmarshalJSON:   params(isByteSlice),
 	methodUnmarshalText:   params(isByteSlice),
 	methodUnmarshalBinary: params(isByteSlice),
 	methodGobDecode:       params(isByteSlice),
 	methodUnmarshalTOML:   params(isAny),
-	methodScan:            params(isAny),
+	methodScan:            anyOf(params(isAny), params(isScanState, isRune)),
 	methodSet:             params(isString),
 	methodUnmarshalXML:    params(isXMLDecoder, isXMLStartElement),
-	methodUnmarshalYAML:   either(params(isUnmarshalFunc), params(isYAMLNode)),
+	methodUnmarshalYAML:   anyOf(params(isUnmarshalFunc), params(isYAMLNode), params(isByteSlice)),
 }
 
 // The decode/bind method names, defined once so the map above and the tests
@@ -99,11 +101,17 @@ func params(checks ...paramCheck) contract {
 	}
 }
 
-// either builds a contract satisfied by either shape, which one interface name
-// serving two published signatures (UnmarshalYAML) needs.
-func either(first, second contract) contract {
+// anyOf builds a contract satisfied by any of several shapes, which one method
+// name serving several published interfaces needs: Scan is both sql.Scanner and
+// fmt.Scanner, and UnmarshalYAML has three signatures across two modules.
+func anyOf(shapes ...contract) contract {
 	return func(list *types.Tuple) bool {
-		return first(list) || second(list)
+		for _, shape := range shapes {
+			if shape(list) {
+				return true
+			}
+		}
+		return false
 	}
 }
 
@@ -136,6 +144,19 @@ func newEmptyIface() *types.Interface {
 // interface.
 func isAny(t types.Type) bool {
 	return types.Identical(types.Unalias(t), emptyIface)
+}
+
+// isScanState reports whether t is fmt.ScanState, the state fmt.Scanner reads
+// its verb's operand from. Its Scan writes into the RECEIVER, so the pointer is
+// as dictated as sql.Scanner's, and the two share nothing but a name.
+func isScanState(t types.Type) bool {
+	named, isNamed := types.Unalias(t).(*types.Named)
+	return isNamed && isNamedFrom(named, "fmt", "ScanState")
+}
+
+// isRune reports whether t is rune, the verb fmt.Scanner is asked to satisfy.
+func isRune(t types.Type) bool {
+	return types.Identical(t, types.Typ[types.Int32])
 }
 
 // isUnmarshalFunc reports whether t is `func(any) error`, the callback

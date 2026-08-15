@@ -3,6 +3,7 @@ package a
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"go/token"
 	"math/rand"
 	"strings"
@@ -139,6 +140,53 @@ func (o *OverHolder) N() int { return o.n }
 type OverPosition token.Position
 
 func (o *OverPosition) N() int { return o.Line } // want `pointer receiver on OverPosition should be a value receiver`
+
+// Keyed slices an ARRAY reached through its receiver, which is an implicit
+// address-of: the slice aliases the array's own storage, so a value receiver
+// would alias a COPY and every write through it would land nowhere. Both
+// methods below become silent no-ops after the rewrite, and go vet says nothing
+// — measured on image/gif's own decoder, whose test suite fails once
+// (*decoder).readBlock takes a value receiver.
+type Keyed struct {
+	bytes [4]byte
+	n     int
+}
+
+func (k *Keyed) Fill(src []byte) { copy(k.bytes[:], src) }
+
+func (k *Keyed) Zero() {
+	s := k.bytes[:]
+	for i := range s {
+		s[i] = 0
+	}
+}
+
+// Held slices a SLICE field, whose header is copied either way and whose
+// backing array both copies share, so the rewrite is safe and it is reported.
+// Slicing something that is not the receiver is safe whatever its type.
+type Held struct {
+	xs   []byte
+	arr  [4]byte
+	name string
+}
+
+func (h *Held) Head(other [4]byte) []byte { // want `pointer receiver on Held should be a value receiver`
+	_ = other[:]
+	return h.xs[:1]
+}
+
+// Stamp is DEFINED OVER time.Time — the canonical idiom for custom marshalling
+// — so a hidden field is no proof of machinery: the original has 49 value
+// methods and is copied everywhere, and Stamp stays reported.
+type Stamp time.Time
+
+func (s *Stamp) Zero() int { return 0 } // want `pointer receiver on Stamp should be a value receiver`
+
+// Verb implements fmt.Scanner, whose Scan writes into the receiver exactly as
+// sql.Scanner's does and shares nothing with it but the name.
+type Verb struct{ v string }
+
+func (v *Verb) Scan(state fmt.ScanState, verb rune) error { return nil }
 
 // Timed holds a time.Time, which is the boundary of the pointer-only-API
 // criterion: time.Time has 49 value methods, so it is an ordinary copyable

@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/tools/go/analysis"
 )
 
 // checked type-checks src as a package whose import path is a bare word — the
@@ -112,13 +113,15 @@ func TestJudgementRequiresPointerDerivesUncopyabilityFromTheType(t *testing.T) {
 	}
 }
 
-// TestStdlibNoCopyNeverClaimsThePackageUnderAnalysis names the exclusion that
-// keeps the criterion from swallowing local code. An import path is judged
-// standard-library by having no dot in its first segment, and a package under
-// analysis can look exactly like that — every analysistest fixture does, and so
-// does any module whose path is a bare word. Without the exclusion, a local
-// type with a pointer-only method set would exempt everything holding it.
-func TestStdlibNoCopyNeverClaimsThePackageUnderAnalysis(t *testing.T) {
+// TestIsStdlibModulePathAndStdlibNoCopyNeverClaimTheCodeUnderAnalysis names the two exclusions
+// that keep the criterion from swallowing local code. An import path is judged
+// standard-library by having no dot in its first segment — and a MODULE path is
+// a domain by convention, not by rule. `go mod init myapp` produces one that
+// reads exactly like the standard library to every package in it, so excluding
+// only the package under analysis leaves a sibling package exempting everything
+// that holds it: a silent, undocumented, zero-cost disablement reached by naming
+// your module.
+func TestIsStdlibModulePathAndStdlibNoCopyNeverClaimTheCodeUnderAnalysis(t *testing.T) {
 	t.Parallel()
 
 	local := `type inner struct{ n int }
@@ -126,50 +129,32 @@ func (i *inner) Bump() { i.n++ }
 type T struct{ in inner }`
 	assert.False(t, judged(t, local), "a local pointer-only type is not standard-library machinery")
 
-	pkg := checked(t, local)
-	inner := pkg.Scope().Lookup("inner").Type()
-	assert.True(
-		t,
-		judgement{own: nil}.stdlibNoCopy(inner),
-		"the same type IS claimed once it is not the package under analysis — the exclusion is the only thing between them",
-	)
-
-	foreign := checkedAt(t, "example.com/x", `type Thing struct{ n int }
-func (t *Thing) Bump() { t.n++ }`).Scope().Lookup("Thing")
-	assert.False(t, judgement{own: nil}.stdlibNoCopy(foreign.Type()),
-		"a THIRD-PARTY pointer-only type is not claimed either: an author can write one, "+
-			"so it goes through -allow where it is written down, not through a derivation")
+	sibling := checkedAt(t, "myapp/store", local).Scope().Lookup("inner").Type()
+	assert.False(t, judgement{module: "myapp"}.stdlibNoCopy(sibling),
+		"nor is a SIBLING package of a dotless module, which is the shape `go mod init myapp` produces")
+	assert.True(t, judgement{}.stdlibNoCopy(sibling),
+		"with no module reported there is nothing but the path to go on, which is why the driver is asked for one")
 
 	assert.True(t, stdlibPath("bufio"), "a first segment with no dot reads as standard-library")
 	assert.True(t, stdlibPath("math/rand"), "and so does a nested one")
 	assert.False(t, stdlibPath("example.com/x"), "a domain does not")
 	assert.False(t, stdlibPath("gopkg.in/yaml.v3"), "wherever its dots fall")
-}
 
-// TestForeignRepresentationSeesATypeDefinedOverAnotherPackage names the
-// criterion the method set cannot reach. `type MyBuf bytes.Buffer` takes the
-// Buffer's representation and leaves every method behind, so stdlibNoCopy sees
-// a type with no methods at all — while copying it copies a buffered writer,
-// which is the same data loss under another name. The question is asked only of
-// a type declared HERE: a foreign type's own struct always holds its own
-// unexported fields, and whether that one may be copied is the method set's
-// question.
-func TestForeignRepresentationSeesATypeDefinedOverAnotherPackage(t *testing.T) {
-	t.Parallel()
+	assert.True(t, underModule("myapp", "myapp"), "a module is inside itself")
+	assert.True(t, underModule("myapp/store", "myapp"), "and so is a package under it")
+	assert.False(t, underModule("myapplication", "myapp"), "a prefix is not a path boundary")
 
-	assert.True(t, judged(t, `import "bytes"; type T bytes.Buffer`),
-		"a type defined over bytes.Buffer holds the machinery and shows none of it")
-	assert.True(t, judged(t, `import "bytes"; type over bytes.Buffer
-type T struct{ b over }`), "and a struct holding one holds it inline")
+	assert.Equal(t, packagePath(""), modulePath(&analysis.Pass{}),
+		"a driver reporting no module leaves the path to speak for itself")
+	assert.Equal(t, packagePath("example.com/m"),
+		modulePath(&analysis.Pass{Module: &analysis.Module{Path: "example.com/m"}}),
+		"and one that reports a module is how a dotless module stops reading as the standard library")
 
-	assert.False(t, judged(t, `import "go/token"; type T token.Position`),
-		"a defined-over type whose fields are all EXPORTED hid nothing and is copyable")
-	assert.False(t, judged(t, "type T struct{ n int }"),
-		"a struct written here has its own package's fields")
-
-	foreign := checked(t, `import "time"; type T struct{ at time.Time }`).Scope().Lookup("T")
-	assert.False(t, judgement{own: nil}.foreignRepresentation(foreign.Type()),
-		"a type declared elsewhere is never asked, or every foreign struct answers yes")
+	foreign := checkedAt(t, "example.com/x", `type Thing struct{ n int }
+func (t *Thing) Bump() { t.n++ }`).Scope().Lookup("Thing")
+	assert.False(t, judgement{}.stdlibNoCopy(foreign.Type()),
+		"a THIRD-PARTY pointer-only type is not claimed either: an author can write one, "+
+			"so it goes through -allow where it is written down, not through a derivation")
 }
 
 // TestRequiresPointerAndComponentsRequirePointerAgreeOnInlineComponents names
