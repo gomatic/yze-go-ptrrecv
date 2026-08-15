@@ -493,12 +493,11 @@ type Marked struct {
 
 func (m *Marked) N() int { return m.n }
 
-// FakeLock is the FORGERY of the Locker shape, and the exemption is declared
-// forgeable by design: two empty methods on an ordinary struct silence this
-// rule for the type and for everything holding it. The silence is asserted
-// rather than fixed because the forgery acquires the property — go vet then
-// refuses every copy of FakeLock and of Holding, at every value receiver and
-// every assignment, so the marker costs copyability rather than nothing.
+// FakeLock is the FORGERY of the Locker shape: two empty methods on an ordinary
+// struct silence this rule for the type and for everything holding it. The
+// silence is pinned so that removing the criterion is visible, NOT because the
+// escape is justified — go vet charges for the marker only where the type is
+// copied, and a type with a pointer-based API never is.
 type FakeLock struct{ n int }
 
 func (f *FakeLock) Lock() {}

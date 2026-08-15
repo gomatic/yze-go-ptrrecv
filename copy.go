@@ -187,16 +187,19 @@ func newLockerIface() *types.Interface {
 // type's methods (Lock/Unlock included) are legitimate. A type whose VALUE is
 // already a Locker is freely copyable and stays flagged.
 //
-// FORGEABLE BY DESIGN, and the forgery acquires the property. Two empty methods
-// on an ordinary struct silence it and every type holding it — and they hand
-// the same struct to go vet, which then refuses every copy of it: `go vet` on a
-// forged type reports "passes lock by value" at each value receiver, "assignment
-// copies lock value" at each assignment, and the same transitively for any
-// struct holding one. The marker is not a spelling that costs nothing; taking
-// it costs copyability everywhere, enforced by another tool in the same gate.
-// So the escape is sanctioned, the corpus asserts the silence, and the two
-// Lock/Unlock methods are themselves justified — the value form of either is a
-// vet error.
+// FORGEABLE, AND THE ACQUISITION ARGUMENT DOES NOT COVER IT. Two empty methods
+// on an ordinary struct — or one `_ noCopy` field — silence the rule for the
+// type and for everything holding it. The defence offered for that was that
+// forging the marker hands the type to go vet, which then refuses every copy of
+// it, so the marker costs copyability rather than nothing. Measured, that is
+// true only where a copy exists: on a struct with a pointer-based API — which is
+// exactly the population this rule reports — `go vet` has nothing to say either
+// way, and the marker silences three findings at no cost at all.
+//
+// The criterion stays because it is go vet's own and dropping it would report
+// every type carrying the canonical `noCopy` marker, which is a real uncopyable
+// idiom. The forgery is an open hole with no discriminator, recorded as a
+// finding rather than sanctioned as a design.
 func lockerShape(t types.Type) bool {
 	return types.Implements(types.NewPointer(t), lockerIface) && !types.Implements(t, lockerIface)
 }

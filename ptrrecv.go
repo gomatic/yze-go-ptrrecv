@@ -26,10 +26,12 @@
 //
 //     b. It does not satisfy the go vet copylocks Locker shape — a POINTER
 //     method set with nullary Lock and Unlock, and a value method set without
-//     them. This is the `type noCopy struct{}` marker idiom. It is FORGEABLE
-//     BY DESIGN: two empty methods silence the rule for the type and for
-//     everything holding it, and they also hand the type to go vet, which
-//     then refuses every copy of it. The forgery acquires the property.
+//     them. This is the `type noCopy struct{}` marker idiom, and it is
+//     FORGEABLE: two empty methods, or one `_ noCopy` field, silence the rule
+//     for the type and for everything holding it. Forging it makes go vet
+//     refuse every COPY of the type — but a type with a pointer-based API is
+//     never copied, so on the population this rule reports the marker costs
+//     nothing. An open hole with no discriminator, not a sanctioned escape.
 //
 //     c. It is not a standard-library type whose API is entirely pointer-based
 //     — every method needs a pointer, none is available on a value. That is

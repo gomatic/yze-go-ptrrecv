@@ -220,19 +220,19 @@ func TestIsTypeParamMakesRequiresPointerConservative(t *testing.T) {
 		"a generic type with no type-parameter field stays copyable")
 }
 
-// TestLockerShapeIsTheVetCopylocksCriterionAndIsForgeableByDesign names both
-// halves of the Locker exemption. A type whose POINTER method set has nullary
-// Lock and Unlock is uncopyable by go vet's copylocks criterion; a type whose
-// VALUE method set has them is freely copyable and stays judged.
+// TestLockerShapeIsTheVetCopylocksCriterionAndIsForgeable names both halves of
+// the Locker exemption. A type whose POINTER method set has nullary Lock and
+// Unlock is uncopyable by go vet's copylocks criterion; a type whose VALUE
+// method set has them is freely copyable and stays judged.
 //
-// The forgery is sanctioned, and the reason is acquisition rather than the doc
-// comment sanctioning it. Two empty methods on an ordinary struct silence this
-// rule for the type and for everything holding it — and they hand the same type
-// to go vet, which then reports "passes lock by value" at every value receiver
-// and "assignment copies lock value" at every assignment, transitively through
-// any struct holding one. Forging the marker costs copyability everywhere,
-// enforced by another tool in the same gate, so the forgery IS the property.
-func TestLockerShapeIsTheVetCopylocksCriterionAndIsForgeableByDesign(t *testing.T) {
+// The forgery is honoured, and this test does not claim that is right. Where a
+// forged type IS copied, go vet reports "passes lock by value" at every value
+// receiver and "assignment copies lock value" at every assignment, transitively
+// — so the marker costs copyability. Where it is not copied, and a type with a
+// pointer-based API never is, it costs nothing and silences the rule for free.
+// The criterion stays because it is vet's own and dropping it would report the
+// canonical `noCopy` idiom; the hole is recorded as a finding.
+func TestLockerShapeIsTheVetCopylocksCriterionAndIsForgeable(t *testing.T) {
 	t.Parallel()
 
 	forged := `type T struct{ n int }
