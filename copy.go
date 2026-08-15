@@ -41,7 +41,8 @@ type judgement struct {
 // parameter (whose instantiation may be any of those), or it transitively holds
 // one through struct fields and array elements.
 func (j judgement) requiresPointer(t types.Type) bool {
-	if isNoCopy(j.allow, t) || lockerShape(t) || j.stdlibNoCopy(t) || isTypeParam(t) {
+	if isNoCopy(j.allow, t) || lockerShape(t) || j.stdlibNoCopy(t) || j.foreignRepresentation(t) ||
+		isTypeParam(t) {
 		return true
 	}
 	return j.componentsRequirePointer(t)
@@ -72,6 +73,42 @@ func (j judgement) stdlibNoCopy(t types.Type) bool {
 	}
 	return types.NewMethodSet(types.NewPointer(named)).Len() > 0 &&
 		types.NewMethodSet(named).Len() == 0
+}
+
+// foreignRepresentation reports whether t's underlying struct IS another
+// package's representation: a field that is unexported and declared in a
+// standard-library package is only reachable by DEFINING a type over that
+// package's type — `type MyBuf bytes.Buffer` — which copies the machinery and
+// leaves none of the methods behind for stdlibNoCopy to read.
+//
+// Only a type declared HERE is asked: a foreign type's own struct always holds
+// its own unexported fields, and whether THAT one may be copied is the method
+// set's question, not this one. A struct written here has its own package's
+// fields, so nothing ordinary matches; a defined-over type whose fields are all
+// EXPORTED (go/token.Position) is copyable and stays judged, because nothing
+// about it was hidden in the first place.
+func (j judgement) foreignRepresentation(t types.Type) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj().Pkg() != j.own {
+		return false
+	}
+	st, ok := named.Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for i := range st.NumFields() {
+		if j.isForeignField(st.Field(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isForeignField reports whether a struct field is unexported and declared in a
+// standard-library package other than the one under analysis.
+func (j judgement) isForeignField(field *types.Var) bool {
+	pkg := field.Pkg()
+	return !field.Exported() && pkg != nil && pkg != j.own && stdlibPath(packagePath(pkg.Path()))
 }
 
 // stdlibPath reports whether an import path is a standard-library one: its

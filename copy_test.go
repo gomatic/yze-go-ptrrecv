@@ -146,6 +146,32 @@ func (t *Thing) Bump() { t.n++ }`).Scope().Lookup("Thing")
 	assert.False(t, stdlibPath("gopkg.in/yaml.v3"), "wherever its dots fall")
 }
 
+// TestForeignRepresentationSeesATypeDefinedOverAnotherPackage names the
+// criterion the method set cannot reach. `type MyBuf bytes.Buffer` takes the
+// Buffer's representation and leaves every method behind, so stdlibNoCopy sees
+// a type with no methods at all — while copying it copies a buffered writer,
+// which is the same data loss under another name. The question is asked only of
+// a type declared HERE: a foreign type's own struct always holds its own
+// unexported fields, and whether that one may be copied is the method set's
+// question.
+func TestForeignRepresentationSeesATypeDefinedOverAnotherPackage(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, judged(t, `import "bytes"; type T bytes.Buffer`),
+		"a type defined over bytes.Buffer holds the machinery and shows none of it")
+	assert.True(t, judged(t, `import "bytes"; type over bytes.Buffer
+type T struct{ b over }`), "and a struct holding one holds it inline")
+
+	assert.False(t, judged(t, `import "go/token"; type T token.Position`),
+		"a defined-over type whose fields are all EXPORTED hid nothing and is copyable")
+	assert.False(t, judged(t, "type T struct{ n int }"),
+		"a struct written here has its own package's fields")
+
+	foreign := checked(t, `import "time"; type T struct{ at time.Time }`).Scope().Lookup("T")
+	assert.False(t, judgement{own: nil}.foreignRepresentation(foreign.Type()),
+		"a type declared elsewhere is never asked, or every foreign struct answers yes")
+}
+
 // TestRequiresPointerAndComponentsRequirePointerAgreeOnInlineComponents names
 // both claims together, because they are one rule: a copy of the outer value
 // copies its INLINE components, so a mutex reached through struct fields or
