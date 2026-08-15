@@ -1,9 +1,10 @@
+package ptrrecv
+
 // The configurable allow-list: the one exemption that is set rather than
 // computed, and the only one that leaves no trace when it fires. Everything
 // here exists so that a value which cannot do what the author believes it does
 // is refused at the moment it is configured, rather than silently exempting
 // nothing (or something else) for the life of the repository.
-package ptrrecv
 
 import (
 	"go/token"
