@@ -309,6 +309,8 @@ func (a *AliasField) N() int { return a.n }
 
 // Reader never writes through its receiver — it only reads fields, calls a
 // value-receiver method, and mutates locals — so it is reported and fixed.
+// Every read of the receiver here happens BEFORE the one call it makes, which
+// is what keeps it on the reported side of the alias rule in alias.go.
 type Reader struct{ n int }
 
 func (r Reader) get() int { return r.n }
@@ -321,7 +323,7 @@ func (r *Reader) Len() int { // want `pointer receiver on Reader should be a val
 	if !(local > 0) {
 		return -r.get()
 	}
-	return r.get() + local
+	return local
 }
 
 func (r *Reader) Sum(xs []int) int { // want `pointer receiver on Reader should be a value receiver`
@@ -767,3 +769,362 @@ func (y *YAMLVariadic) UnmarshalYAML(unmarshal func(...any) error) error { retur
 // instead would exempt every type all of whose methods take pointers, which is
 // the shape this rule exists to report.
 func (l *localAPI) N() int { return l.n } // want `pointer receiver on localAPI should be a value receiver`
+
+// --- The alias barrier: what the method still OBSERVES after a call ----------
+
+// aliasStep is the callback shape the alias rule was raised for.
+type aliasStep func()
+
+// visible is what an alias in the reproduction writes through.
+var visible *ReadAfterCall
+
+// ReadAfterCall is the reproduction: the receiver is read AFTER a call the
+// method cannot see through, so a value receiver reads a copy frozen at call
+// time. `c.WithStep(func() { c.n = 99 })` printed 99 with the pointer and 1
+// without it, with go vet silent both ways. Nothing here is a function literal
+// and nothing writes through the receiver, so every clause in rewrite.go says
+// the rewrite is safe.
+type ReadAfterCall struct{ n int }
+
+func alias() { visible.n = 99 }
+
+func (r *ReadAfterCall) Late() int { alias(); return r.n }
+
+func (r *ReadAfterCall) WithStep(step aliasStep) int { step(); return r.n }
+
+// ReadBeforeCall is the same type reading the receiver only in the ARGUMENTS of
+// the call it makes. Arguments are evaluated before the call, so the read is one
+// the callee has not had a chance to disturb, and the finding stands. Without
+// this case the rule could be "any call at all" and no test would notice.
+type ReadBeforeCall struct{ n int }
+
+func (r *ReadBeforeCall) Report() int { // want `pointer receiver on ReadBeforeCall should be a value receiver`
+	fmt.Println(r.n)
+	return 0
+}
+
+// TransparentCall reads the receiver after a conversion, a builtin and a
+// function literal invoked where it is written — none of which runs code the
+// walk cannot see, so none is a barrier and the finding stands.
+type TransparentCall struct {
+	n  int
+	xs []int
+}
+
+func (t *TransparentCall) Total() int { // want `pointer receiver on TransparentCall should be a value receiver`
+	width := int64(t.n)
+	count := len(t.xs)
+	local := 0
+	func() { local = t.n }()
+	return int(width) + count + local + t.n
+}
+
+// OpaqueInsideLiteral hides the call inside a literal invoked where it is
+// written. The literal is walked, so its own call is a barrier in its own right
+// and the read after it is withheld — a clause that stopped at the literal
+// would report this.
+type OpaqueInsideLiteral struct{ n int }
+
+func (o *OpaqueInsideLiteral) Total() int {
+	func() { alias() }()
+	return o.n
+}
+
+// CloseIsABarrier reads the receiver after closing a channel, which wakes every
+// goroutine blocked on it and any of them may hold an alias. Every other builtin
+// computes and returns, which TransparentCall pins on the other side.
+type CloseIsABarrier struct {
+	n  int
+	ch chan int
+}
+
+func (c *CloseIsABarrier) Drain() int { close(c.ch); return c.n }
+
+// ReceiveIsABarrier and SendIsABarrier read the receiver after a channel
+// operation, which is a point another goroutine holding an alias runs at.
+type ReceiveIsABarrier struct {
+	n  int
+	ch chan int
+}
+
+func (r *ReceiveIsABarrier) Next() int { <-r.ch; return r.n }
+
+func (r *ReceiveIsABarrier) Offer() int { r.ch <- 1; return r.n }
+
+// RangeOverChannel receives once per turn, so the read in its body follows a
+// barrier however it is written.
+type RangeOverChannel struct {
+	n  int
+	ch chan int
+}
+
+func (r *RangeOverChannel) Sum() int {
+	total := 0
+	for range r.ch {
+		total += r.n
+	}
+	return total
+}
+
+// LoopReadsOnALaterTurn writes the read BEFORE the call and still runs it after
+// on the next turn, which source order alone calls safe.
+type LoopReadsOnALaterTurn struct {
+	n  int
+	xs []int
+}
+
+func (l *LoopReadsOnALaterTurn) Sum() int {
+	total := 0
+	for range l.xs {
+		total += l.n
+		alias()
+	}
+	return total
+}
+
+// LoopReadsInTheCondition puts the read in the loop's condition and the barrier
+// in its body, so a rule checking one part at a time would miss it.
+type LoopReadsInTheCondition struct{ n int }
+
+func (l *LoopReadsInTheCondition) Count() int {
+	i := 0
+	for i < l.n {
+		alias()
+		i++
+	}
+	return i
+}
+
+// LoopRangesOnceOverTheReceiver reads the receiver only in the expression the
+// range runs over, which is evaluated once before the loop, so the call in the
+// body never precedes it. The pair with LoopReadsOnALaterTurn is what pins the
+// once/per-turn distinction.
+type LoopRangesOnceOverTheReceiver struct {
+	n  int
+	xs []int
+}
+
+func (l *LoopRangesOnceOverTheReceiver) Count() int { // want `pointer receiver on LoopRangesOnceOverTheReceiver should be a value receiver`
+	total := 0
+	for range l.xs {
+		alias()
+		total++
+	}
+	return total
+}
+
+// DeferReadsAtTheEnd writes the read first and runs it last: a deferred call
+// runs after every barrier in the method, which is the one place source order is
+// not run order.
+type DeferReadsAtTheEnd struct{ n int }
+
+func (d *DeferReadsAtTheEnd) Run() {
+	defer func() { fmt.Println(d.n) }()
+	alias()
+}
+
+// DeferWithoutABarrier defers the same read in a method that hands control
+// nowhere, so there is nothing for the deferred read to be after and the finding
+// stands.
+type DeferWithoutABarrier struct{ n int }
+
+func (d *DeferWithoutABarrier) Run() { // want `pointer receiver on DeferWithoutABarrier should be a value receiver`
+	defer func() { _ = d.n }()
+	_ = 1
+}
+
+// GotoRepeatsAnything jumps backwards, so no enumeration of loops says what runs
+// twice and every read of the receiver is treated as following the barrier.
+type GotoRepeatsAnything struct{ n int }
+
+func (g *GotoRepeatsAnything) Count() int {
+	total := 0
+loop:
+	total += g.n
+	alias()
+	if total < 3 {
+		goto loop
+	}
+	return total
+}
+
+// GotoWithoutABarrier jumps backwards in a method that calls nothing, so there
+// is no barrier for the jump to repeat and the finding stands.
+type GotoWithoutABarrier struct{ n int }
+
+func (g *GotoWithoutABarrier) Count() int { // want `pointer receiver on GotoWithoutABarrier should be a value receiver`
+	total := 0
+loop:
+	total += g.n
+	if total < 3 {
+		goto loop
+	}
+	return total
+}
+
+// --- The parenthesized immediately-invoked literal ---------------------------
+
+// ParenInvoked wraps the literal it invokes in parentheses, which is legal Go
+// that gofmt preserves. The literal still runs where it is written, so it cannot
+// outlive the call and the read inside it is safe — but only because the walk
+// looks through the parentheses. Without them the paired case below is the same
+// shape and the two are indistinguishable to a clause that does not.
+type ParenInvoked struct{ n int }
+
+func (p *ParenInvoked) Read() int { // want `pointer receiver on ParenInvoked should be a value receiver`
+	var n int
+	(func() { n = p.n })()
+	return n
+}
+
+// ParenEscaped parenthesizes a literal that is NOT invoked, so it can outlive
+// the call and the read inside it is unsafe however read-only it is. It is the
+// other side of the same parentheses.
+type ParenEscaped struct{ n int }
+
+func (p *ParenEscaped) Reader() func() int { return (func() int { return p.n }) }
+
+// ReadBetweenTwoCalls reads the receiver between two barriers, so the FIRST one
+// is what decides it: taking the last would find the read before the barrier and
+// report the method.
+type ReadBetweenTwoCalls struct{ n int }
+
+func (r *ReadBetweenTwoCalls) Total() int {
+	alias()
+	total := r.n
+	alias()
+	return total
+}
+
+// RangeOverFunction calls its iterator once per turn, and the call appears
+// nowhere in the AST — `for range Seq` is compiled into a call of Seq with a
+// synthesised yield. An iterator that mutated the receiver through a
+// package-level alias between two yields kept the finding, and deleting the star
+// took the program from "sum: 100" to "sum: 2" with go vet silent both ways.
+type RangeOverFunction struct{ n int }
+
+func rangeSeq(yield func(int) bool) { _ = yield(1) }
+
+func (r *RangeOverFunction) Sum() int {
+	total := 0
+	for range rangeSeq {
+		total += r.n
+	}
+	return total
+}
+
+// RangeOverSlice is the other side: a range over storage already in hand
+// computes without leaving the method, so the read in its body stands.
+type RangeOverSlice struct {
+	n  int
+	xs []int
+}
+
+func (r *RangeOverSlice) Sum() int { // want `pointer receiver on RangeOverSlice should be a value receiver`
+	total := 0
+	for range r.xs {
+		total += r.n
+	}
+	return total
+}
+
+// --- The write barrier: a call is not the only way to reach the object -------
+
+// visibleTouch is the package-level alias the reproduction writes through.
+var visibleTouch *WriteThroughAnAlias
+
+// touched is where a reproduction leaves what it read.
+var touched int
+
+// WriteThroughAnAlias contains no call, no function literal and no defer, and
+// still changes answer under the remedy: `live.n = 99; sink = r.n` printed 99
+// with the pointer receiver and 1 without it, with go vet silent both ways.
+type WriteThroughAnAlias struct{ n int }
+
+func (r *WriteThroughAnAlias) Touch() {
+	visibleTouch.n = 99
+	touched = r.n
+}
+
+// sharedCounter is a package-level VALUE, not a pointer: the caller may have
+// taken its address and passed it as the receiver, so writing a field of it is
+// writing where the caller can see.
+var sharedCounter WriteToAPackageValue
+
+// WriteToAPackageValue writes to a package-level variable through no pointer at
+// all, which is the half of the write barrier the package-scope test decides on
+// its own — every other reproduction reaches the caller through an indirection
+// and never asks where the root was declared.
+type WriteToAPackageValue struct{ n int }
+
+func (p *WriteToAPackageValue) Bump() int {
+	sharedCounter.n = 99
+	return p.n
+}
+
+// DeferredWritesRunInReverse registers a reader and then a writer, so the writer
+// runs first and the reader observes what it wrote. Neither statement is a call
+// and neither literal escapes.
+type DeferredWritesRunInReverse struct{ n int }
+
+var visibleDeferred *DeferredWritesRunInReverse
+
+func (d *DeferredWritesRunInReverse) Read() {
+	defer func() { touched = d.n }()
+	defer func() { visibleDeferred.n = 99 }()
+}
+
+// WriteThroughAPointerParameter reaches storage the caller may share by
+// dereferencing a parameter rather than a package variable.
+type WriteThroughAPointerParameter struct{ n int }
+
+func (w *WriteThroughAPointerParameter) Set(other *WriteThroughAPointerParameter) int {
+	other.n = 1
+	return w.n
+}
+
+// WriteThroughASliceElement reaches an addressable element, which the caller may
+// have taken the address of.
+type WriteThroughASliceElement struct{ n int }
+
+func (w *WriteThroughASliceElement) Fill(xs []WriteThroughASliceElement) int {
+	xs[0].n = 1
+	return w.n
+}
+
+// WriteToLocalStorage writes only to storage this method declares — a local
+// variable, a field of a local struct, an element of a local ARRAY, and the
+// blank identifier — none of which existed when the caller took the address it
+// passed, so the read that follows stands.
+type WriteToLocalStorage struct{ n int }
+
+type localPair struct{ a, b int }
+
+func (w *WriteToLocalStorage) Total() int { // want `pointer receiver on WriteToLocalStorage should be a value receiver`
+	total := 0
+	var pair localPair
+	var arr [4]int
+	(total) = 1
+	pair.a = 2
+	arr[0] = 3
+	_ = &total
+	return total + pair.a + arr[0] + w.n
+}
+
+// WriteThroughADereference reaches the same storage by dereferencing rather than
+// by selecting through the pointer, which is a different link in the chain.
+type WriteThroughADereference struct{ n int }
+
+func (w *WriteThroughADereference) Reset(other *int) int {
+	*other = 1
+	return w.n
+}
+
+// WriteThroughAParenthesizedDereference is the same link written with the
+// parentheses gofmt preserves.
+type WriteThroughAParenthesizedDereference struct{ n int }
+
+func (w *WriteThroughAParenthesizedDereference) Reset(other *int) int {
+	(*other) = 1
+	return w.n
+}

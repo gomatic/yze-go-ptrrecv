@@ -31,8 +31,9 @@ type typeName string
 
 // judgement is the copy-semantics decision for one package: the configured
 // allow-list, the package under analysis (which is never stdlib, whatever its
-// import path looks like), its module, and the platform sizes the copy cost in
-// size.go is measured against.
+// import path looks like), its module, and the type layout the copy cost in
+// size.go is measured against — judgedSizes, never the driver's, so the verdict
+// does not move with the platform under analysis.
 type judgement struct {
 	allow  allowSet
 	own    *types.Package

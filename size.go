@@ -30,17 +30,57 @@ import (
 // remedy nobody can take is answered with a baseline, which is the population
 // this suite exists to remove.
 
+// judgedArch is the GOARCH whose type layout every verdict is measured on,
+// whatever platform the analysis is running for.
+//
+// It is stated rather than taken from the driver because a width made of words
+// moves with GOARCH and the bound is in BYTES, so the driver's own sizes make
+// the VERDICT move too. REPRODUCED on one file with no build tag: `type Word
+// uintptr`, `type Twenty struct{ w [20]Word; n Count }` and a read-only
+// `func (t *Twenty) First() Word` is 168 bytes on a 64-bit platform and 84 on a
+// 32-bit one, so the 128-byte bound falls between — the same binary on the same
+// file was silent on darwin/arm64 and under GOOS=linux GOARCH=amd64 and
+// reported under GOOS=linux GOARCH=386.
+//
+// That is a rule green on the developer's machine and red in a cross-compiled
+// CI, whose only available answer is a disablement, and a remedy taken to
+// satisfy one platform's verdict is a value receiver the other never asked for.
+// A gate gives one answer, so the layout is the analyzer's and is named here.
+// 64-bit is the layout the fleet builds and ships on; a 32-bit target reads a
+// verdict about the 64-bit copy, which is the wider of the two.
+const judgedArch = "amd64"
+
+// judgedSizes is judgedArch's type layout, the only sizes any verdict is
+// measured with. gc is the toolchain the fleet builds with.
+var judgedSizes = types.SizesFor("gc", judgedArch)
+
 // ErrInvalidMaxCopy reports a -max value that is not a byte count this rule can
 // honour. go-yze's ApplyConfig turns a Set failure into its own
 // ErrInvalidSettingValue, so a mistyped bound in a .stickler.yaml fails the run
 // instead of silently judging every receiver or none.
-const ErrInvalidMaxCopy errs.Const = "-max is not a receiver size in bytes (a non-negative integer)"
+const ErrInvalidMaxCopy errs.Const = "-max is not a receiver size in bytes at least as wide as the pointer a value receiver replaces"
 
-// receiverBytes is a receiver type's width in bytes, as the driver's own
-// types.Sizes computes it for the platform under analysis. It is also the -max
-// flag's value, so the bound and the measurement are the same type and cannot
-// be compared in different units.
+// receiverBytes is a receiver type's width in bytes, as judgedSizes computes it.
+// It is also the -max flag's value, so the bound and the measurement are the
+// same type and cannot be compared in different units.
 type receiverBytes int64
+
+// pointerBytes is the width of the pointer receiver a value receiver replaces,
+// and so the FLOOR of the -max bound. Below it the bound withholds a finding on
+// a receiver whose copy is narrower than the pointer it replaces — a copy that
+// cannot cost more than the pointer does — which is not a bound on cost but a
+// refusal to judge.
+//
+// The value this exists for is 0, which the guard used to accept while refusing
+// -1 for a reason that is equally true of it: REPRODUCED end to end through the
+// real runner, three lines of .stickler.yaml (`analyzers: {ptrrecv: {max:
+// ["0"]}}`) took a module reporting two findings to complete silence and exit
+// 0, and `-max=0 -json std` over Go 1.26.6 reported 65 locations against the
+// default's 1431 — 95.5% of the rule, off, with nothing printed, nothing
+// counted and nothing ratcheted. 0 is not a smaller bound but a different rule:
+// copyIsCostly is `> max`, so at 0 the survivors are exactly the receivers that
+// occupy no memory at all.
+var pointerBytes = receiverBytes(judgedSizes.Sizeof(types.Typ[types.UnsafePointer]))
 
 // defaultMaxCopy is the widest receiver whose copy this rule still calls free.
 //
@@ -64,13 +104,15 @@ var configuredMaxCopy = defaultMaxCopy
 func (b receiverBytes) String() string { return strconv.FormatInt(int64(b), 10) }
 
 // Set parses and validates the bound. A pointer receiver is what flag.Value
-// requires. A value that is not a non-negative integer is refused with
-// ErrInvalidMaxCopy rather than accepted as a bound nothing can honour: a
-// negative one would exempt every receiver in the run and print nothing.
+// requires. A value that is not an integer of at least pointerBytes is refused
+// with ErrInvalidMaxCopy rather than accepted as a bound nothing can honour: a
+// negative one, and 0, and anything under one pointer width, exempt receivers
+// whose copy is no wider than the pointer they replace, which prints nothing
+// and charges nothing.
 func (b *receiverBytes) Set(value string) error {
 	size, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || size < 0 {
-		return ErrInvalidMaxCopy.With(err, "max", value)
+	if err != nil || receiverBytes(size) < pointerBytes {
+		return ErrInvalidMaxCopy.With(err, "max", value, "minimum", pointerBytes)
 	}
 	*b = receiverBytes(size)
 	return nil
@@ -78,21 +120,101 @@ func (b *receiverBytes) Set(value string) error {
 
 // copyIsCostly reports whether copying t on every call costs materially more
 // than passing the pointer it would replace — which makes the value receiver a
-// remedy the author cannot take whatever else the method does.
+// remedy the author cannot take whatever else the method does. A width this
+// package cannot measure is costly, because a missed finding costs a finding
+// and a finding whose remedy breaks the program manufactures a baseline.
 func (j judgement) copyIsCostly(t types.Type) bool {
-	if isGenericNamed(t) {
-		return false
-	}
-	return receiverBytes(j.sizes.Sizeof(t)) > configuredMaxCopy
+	narrowest, measurable := j.narrowestBytes(t)
+	return !measurable || narrowest > configuredMaxCopy
 }
 
-// isGenericNamed reports whether t is an uninstantiated generic named type,
-// whose width go/types refuses to compute: Alignof asserts !isTypeParam and
-// panics on a type parameter (go/types/gcsizes.go:54), and the receiver of
-// `func (b *Box[T]) M()` carries one in every field written over T. Such a
-// receiver has no single width — Box[byte] and Box[[1 << 20]byte] are the same
-// declaration — so the bound cannot speak about it and does not.
-func isGenericNamed(t types.Type) bool {
+// narrowestBytes is the width in bytes of the narrowest value t can hold, and
+// whether that width could be measured at all.
+//
+// go/types answers a type it considers larger than the address space with -1
+// rather than an error, and a generic declaration reaches that answer while
+// still compiling: `type Big[T any] struct{ a [1<<40][1<<40]byte; v T }` is
+// rejected outright when it is written without the parameter and accepted with
+// it, because the size of an uninstantiated generic is never computed. A -1 read
+// as a byte count is smaller than every bound, so the widest receiver there is
+// would be judged free.
+func (j judgement) narrowestBytes(t types.Type) (receiverBytes, bool) {
+	narrowest, instantiable := narrowestInstance(t)
+	if !instantiable {
+		return 0, false
+	}
+	size := j.sizes.Sizeof(narrowest)
+	if size < 0 {
+		return 0, false
+	}
+	return receiverBytes(size), true
+}
+
+// narrowestInstance is t with the empty struct — the narrowest type there is —
+// substituted for every type parameter it still stands on, so a generic
+// receiver is measured against the smallest width any instantiation of it can
+// have.
+//
+// The alternative, declining to measure a generic receiver at all, is what this
+// replaces, and it turned criterion 4 off for anything carrying a parameter:
+// REPRODUCED with two types in one file over byte-identical fields, where
+// `type PlainMatcher struct{ table [1<<15]uint32; n Count }` was withheld at
+// 131080 bytes and `type GenericMatcher[T any]` with the same two fields and an
+// unused T was REPORTED — and the remedy, built and run, took two million calls
+// of its read-only Find from 977.167µs to 26.779913458s.
+//
+// Substituting is sound where declining is not because the substitution can
+// only make the type NARROWER: the bound is `wider than max`, so a receiver
+// withheld on its narrowest instance is withheld on every instance, and one
+// reported on its narrowest may still be wide once instantiated — which is the
+// direction this rule is conservative in everywhere else.
+func narrowestInstance(t types.Type) (types.Type, bool) {
 	named, isNamed := types.Unalias(t).(*types.Named)
-	return isNamed && named.TypeParams().Len() > 0
+	if !isNamed || named.TypeParams().Len() == 0 {
+		return t, true
+	}
+	instance, err := instantiate(nil, named.Origin(), narrowestArguments(named), false)
+	if err != nil {
+		return nil, false
+	}
+	return instance, true
+}
+
+// instantiate is go/types' instantiation, indirected because its failure is
+// unreachable from any receiver this analyzer sees — the argument count is
+// derived from the parameter list it is checked against, and constraints are
+// not validated — while the branch that answers it decides a verdict, so the
+// only way to test that branch is to make the call fail.
+var instantiate = types.Instantiate
+
+// typeArgumentIndex is a position in a generic type's argument list.
+type typeArgumentIndex int
+
+// narrowestArguments is one type argument per type parameter of named's origin:
+// the empty struct wherever the declaration still stands on a parameter of its
+// own, and the argument itself wherever it is already instantiated over a
+// concrete type. `Box[Table]` reached through a field is 262144 bytes and is
+// measured as such; the receiver of `func (b *Box[T]) M()`, whose one argument
+// IS the parameter T, is measured with T at zero width.
+func narrowestArguments(named *types.Named) []types.Type {
+	args := named.TypeArgs()
+	narrowest := make([]types.Type, named.Origin().TypeParams().Len())
+	for i := range narrowest {
+		narrowest[i] = narrowestArgument(args, typeArgumentIndex(i))
+	}
+	return narrowest
+}
+
+// narrowestArgument is args[i] when the type is instantiated over a concrete
+// type there, and the empty struct when it stands on a type parameter or has no
+// arguments at all — the bare origin `Box`, which is what a package scope holds.
+func narrowestArgument(args *types.TypeList, at typeArgumentIndex) types.Type {
+	if int(at) >= args.Len() {
+		return types.NewStruct(nil, nil)
+	}
+	argument := args.At(int(at))
+	if _, stillAParameter := types.Unalias(argument).(*types.TypeParam); stillAParameter {
+		return types.NewStruct(nil, nil)
+	}
+	return argument
 }

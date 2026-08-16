@@ -95,13 +95,43 @@
 //     the receiver itself, so a pointer receiver observes the caller's value
 //     live while a value receiver observes a copy frozen at call time. A
 //     literal invoked where it is written, `defer` included, runs before the
-//     method returns and is walked like any other subtree.
+//     method returns and is walked like any other subtree; parentheses around
+//     it change nothing.
+//
+//     And the method must not still be OBSERVING its receiver after anything
+//     could have changed the object, because the copy is made at CALL time: a
+//     read that follows a call, a channel operation, a `close`, a range over a
+//     channel or an iterator, or a write the method makes anywhere but into its
+//     own local storage, sees what an alias left there, which a value receiver
+//     never does. `func (c *C) WithStep(step Step) Count { step(); return c.n }` is
+//     reported by every clause above and its remedy takes the program from 99
+//     to 1. A read in a loop or a `defer` counts as following the barrier
+//     however early it is written; arguments are evaluated before their call
+//     and do not. alias.go carries the two reproductions, and the cost of the
+//     clause is 266 of the 1431 source-only locations this rule reported across
+//     the Go 1.26.6 standard library, and 290 of the 1709 with test files.
 //
 //  4. The receiver is small enough to copy — at most the -max bound (below),
 //     128 bytes by default. Nothing in (1) asks how BIG a type is, so a
 //     [1<<15]uint32 field multiplies the copy by 32768 unseen, and a value
 //     receiver on the resulting 640 KiB struct overflows the goroutine stack.
 //     size.go carries the reproduction and the measurement behind the default.
+//
+//     THE WIDTH IS MEASURED ON A STATED LAYOUT, gc/amd64, and never on the
+//     platform under analysis. A width made of words moves with GOARCH while
+//     the bound is in bytes, so the driver's own sizes make the VERDICT move:
+//     `struct{ w [20]uintptr; n int }` is 168 bytes on a 64-bit target and 84
+//     on a 32-bit one, and the same binary on the same untagged file was silent
+//     under GOARCH=amd64 and reported under GOARCH=386. A gate gives one
+//     answer.
+//
+//     A GENERIC RECEIVER IS MEASURED ON ITS NARROWEST INSTANCE, with the empty
+//     struct substituted for every type parameter it stands on. Declining to
+//     measure it — which is what a type parameter's absent width used to buy —
+//     turned this criterion off for anything carrying one: a `[T any]` on the
+//     declaration took a 131080-byte receiver from withheld to reported, and
+//     the remedy from 977µs to 26.8s over two million calls. A width go/types
+//     will not state, which only a generic declaration reaches, is costly.
 //
 // # There is no automatic rewrite, deliberately
 //
@@ -123,12 +153,13 @@
 // {"Total":{"Cents":1234}} to {"Total":"12.34"}; `func (t *Temp) String()`
 // takes fmt.Println(Temp{21}) from {21} to 21C and a fmt.Stringer assertion on
 // a Temp value from false to true; and on the standard library itself, %v of a
-// strings.Builder VALUE starts printing its contents. 338 of the 1709
-// receivers this rule reports across the Go 1.26.6 standard library carry a
-// method name belonging to a published interface — 75 Error, 62 String, 32
-// Size, 28 Close, 26 Read, 24 Write, 24 Len, 21 Unwrap, 14 Name, 4
-// MarshalJSON, 4 GoString and the rest — which is an upper bound on the
-// exposure and not a count of harmful ones.
+// strings.Builder VALUE starts printing its contents. Re-measured on Go 1.26.6
+// with criterion (3)'s alias clause in force: this rule reports 1419 receivers
+// with test files included and 1165 without, and 272 of them carry a method
+// name belonging to a published interface — 55 Error, 45 String, 32 Size, 23
+// Len, 21 Close, 21 Unwrap, 19 Read, 17 Write and the rest — which is an upper
+// bound on the exposure and not a count of harmful ones. The three figures were
+// 1709, 1431 and 338 before the alias clause narrowed the population.
 //
 // An earlier revision claimed the rewrite "only widens the method set, so
 // callers keep compiling". That is true about compiling and false about
@@ -149,10 +180,15 @@
 // a configured exemption prints nothing and ratchets nothing.
 //
 // The -max flag (setting "max") is criterion (4)'s bound in bytes, 128 by
-// default. A value that is not a non-negative integer is refused with
-// ErrInvalidMaxCopy rather than accepted as a bound nothing can honour — a
-// negative one would exempt every receiver in the run and print nothing.
-// Raising it is a disablement channel of the same kind as -allow.
+// default. A value that is not an integer of at least one pointer width (8, on
+// the layout above) is refused with ErrInvalidMaxCopy rather than accepted as a
+// bound nothing can honour: below that the bound withholds findings on
+// receivers whose copy is narrower than the pointer it replaces, which is not a
+// bound on cost but a refusal to judge, and it prints nothing while doing it.
+// `-max=0` was accepted and took the standard library from 1431 findings to 65.
+// Raising it is a disablement channel of the same kind as -allow, and lowering
+// it within the permitted range is one too — how much either may move is the
+// owner's to set, and is not decided here.
 package ptrrecv
 
 import (
@@ -191,17 +227,26 @@ var Registration = goyze.Registration{
 
 // run reports each unjustified pointer-receiver method.
 func run(pass *analysis.Pass) (any, error) {
-	judge := judgement{
-		allow:  configuredAllow.set(),
-		own:    pass.Pkg,
-		module: modulePath(pass),
-		sizes:  pass.TypesSizes,
-	}
+	judge := newJudgement(pass)
 	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	insp.Preorder([]ast.Node{(*ast.FuncDecl)(nil)}, func(n ast.Node) {
 		check(pass, judge, n.(*ast.FuncDecl))
 	})
 	return nil, nil
+}
+
+// newJudgement is one pass's decision context. The layout is judgedSizes and
+// never pass.TypesSizes, which is the whole content of the platform clause: the
+// driver hands the pass the sizes of the platform under analysis, and reading
+// them here is what made the same file silent under GOARCH=amd64 and reported
+// under GOARCH=386.
+func newJudgement(pass *analysis.Pass) judgement {
+	return judgement{
+		allow:  configuredAllow.set(),
+		own:    pass.Pkg,
+		module: modulePath(pass),
+		sizes:  judgedSizes,
+	}
 }
 
 // check reports a pointer-receiver method nothing requires a pointer for.

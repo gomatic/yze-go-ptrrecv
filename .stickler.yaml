@@ -24,4 +24,16 @@ soft-baseline:
   # enumdiscrim) await adjudication; rollout rules (errtest, errtested,
   # testfile, clidomain, cliflags, clilayout, fuzzreq, exhaustive) gate
   # again at zero.
-  yze/enumdiscrim: 2
+  # Raised 2 -> 3 on 2026-08-16 for alias.go's arrowBarrier, `x.Op !=
+  # token.ARROW`, which asks whether a unary operator is the channel-receive
+  # one. The remedy the diagnostic names is untakable and was BUILT to check:
+  # written as `switch x.Op { case token.ARROW: …; default: … }` the run fails
+  # instead on `exhaustive`, "missing cases in switch of type token.Token"
+  # naming all 89 other members, and exhaustive's own baseline here is 0. So
+  # the two rules together leave no spelling of a token.Token discrimination
+  # that passes, which is the shape docs/s04.md item 8 names — a diagnostic
+  # whose only available answer is this entry. enumdiscrim's package comment
+  # sanctions the construct in as many words ("a fast-path check ... is a
+  # legitimate two-way split of a many-way domain, and only the author knows
+  # which reading is intended"), and it gates nothing.
+  yze/enumdiscrim: 3
