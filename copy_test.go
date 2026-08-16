@@ -1,11 +1,10 @@
 package ptrrecv
 
 // White-box tests for the copy-semantics rules. Every judgement here decides
-// whether a pointer receiver is JUSTIFIED, and the --fix path rewrites the ones
-// it judges unjustified into value receivers. Getting that wrong does not
-// produce a wrong diagnostic — it rewrites a type that must not be copied into
-// one the compiler will happily copy, which is a data race the author never
-// wrote and the tool introduced.
+// whether a pointer receiver is JUSTIFIED. Getting one wrong does not produce a
+// merely noisy diagnostic — it tells the author to turn a type that must not be
+// copied into one the compiler will happily copy, which is a data race the tool
+// asked for and the author never wrote.
 
 import (
 	"go/ast"
@@ -139,6 +138,11 @@ type T struct{ in inner }`
 	assert.True(t, stdlibPath("math/rand"), "and so does a nested one")
 	assert.False(t, stdlibPath("example.com/x"), "a domain does not")
 	assert.False(t, stdlibPath("gopkg.in/yaml.v3"), "wherever its dots fall")
+	assert.True(t, stdlibPath("myapp/pkg.util"),
+		"the FIRST segment is what carries the domain: a dot deeper in the path is an "+
+			"ordinary package name, and asking whether the whole path contains one answers "+
+			"differently here and nowhere in the standard library, which is why the cut is "+
+			"the thing under test rather than the dot")
 
 	assert.True(t, underModule("myapp", "myapp"), "a module is inside itself")
 	assert.True(t, underModule("myapp/store", "myapp"), "and so is a package under it")

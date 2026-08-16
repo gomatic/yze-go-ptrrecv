@@ -96,13 +96,19 @@ func parseAllowList(value allowValue) ([]allowEntry, error) {
 
 // parseAllowEntry trims one field and reports whether it names a type the way
 // isNoCopy looks one up: a package path, a dot, and a Go identifier.
+//
+// It returns the TRIMMED entry rather than rebuilding one from the path and the
+// name. Rebuilding decided nothing — the two are equal for every accepted input
+// by construction, since splitQualified cuts at the final dot and puts it back
+// — and a measured-inert branch is removed rather than defended by a case no
+// input can write.
 func parseAllowEntry(field allowField) (allowEntry, error) {
 	entry := allowEntry(strings.TrimSpace(string(field)))
 	path, name, isQualified := splitQualified(entry)
 	if !isQualified || !token.IsIdentifier(string(name)) || !isImportPath(path) {
 		return "", ErrInvalidAllowEntry.With(nil, "entry", string(field))
 	}
-	return allowEntry(string(path) + "." + string(name)), nil
+	return entry, nil
 }
 
 // isImportPath reports whether path could be one: every segment is non-empty,

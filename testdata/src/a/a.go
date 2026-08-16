@@ -3,6 +3,7 @@ package a
 import (
 	"bufio"
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"go/token"
 	"math/rand"
@@ -586,3 +587,183 @@ func (e *IdxEsc) Grab() int { return e.cells[deref(&e.k)].Get() }
 type Deref struct{ n int }
 
 func (d *Deref) Val() int { return (*d).n }
+
+// --- Criterion 3, the escaping-literal clause -------------------------------
+//
+// A function literal that can outlive the call captures the RECEIVER, not a
+// field: with a pointer receiver it observes the caller's value live, with a
+// value receiver a copy frozen at call time. Reproduced before this clause
+// existed — `Reader` below was reported and rewritten, and the program printed
+// "closure sees: 2" before and "closure sees: 0" after, with go vet silent.
+
+// Escaping returns a closure that reads a receiver field. The closure outlives
+// the call, so the read is not behaviour-preserving and nothing is reported.
+type Escaping struct{ n int }
+
+func (e *Escaping) Reader() func() int { return func() int { return e.n } }
+
+// Started hands the receiver to a goroutine, which is the same shape: the
+// literal runs after the method has returned.
+type Started struct {
+	n    int
+	done chan struct{}
+}
+
+func (s *Started) Watch() {
+	go func() {
+		<-s.done
+		_ = s.n
+	}()
+}
+
+// Passed hands the literal to another function, which may store it. Nothing
+// here can tell whether it does.
+type Passed struct{ n int }
+
+func (p *Passed) Register(register func(func() int)) { register(func() int { return p.n }) }
+
+// Stored keeps the literal in a field, where it certainly outlives the call.
+type Stored struct {
+	n   int
+	get func() int
+}
+
+func (s *Stored) Freeze() { s.get = func() int { return s.n } }
+
+// Immediate is the near side of the boundary: a literal invoked where it is
+// written cannot outlive the call, so the receiver read inside it is as safe as
+// one written directly and the method IS reported.
+type Immediate struct{ n int }
+
+func (i *Immediate) Total() int { // want `pointer receiver on Immediate should be a value receiver`
+	return func() int { return i.n }()
+}
+
+// Deferred is the other near side: a deferred literal runs before the method
+// returns, so it is walked like any other subtree and the method IS reported.
+type Deferred struct{ n int }
+
+func (d *Deferred) Log() int { // want `pointer receiver on Deferred should be a value receiver`
+	total := 0
+	defer func() { total = d.n }()
+	return total
+}
+
+// LitFree returns a literal that mentions nothing of the receiver, so the
+// literal's escape costs nothing and the method IS reported. Without this case
+// the clause could be "any escaping literal at all" and no test would notice.
+type LitFree struct{ n int }
+
+func (l *LitFree) Constant() func() int { return func() int { return 7 } } // want `pointer receiver on LitFree should be a value receiver`
+
+// NestedEscape hides the escaping literal INSIDE an immediate one, so a clause
+// that stopped descending at the first contained literal would miss it.
+type NestedEscape struct{ n int }
+
+func (n *NestedEscape) Wrap() func() int {
+	return func() func() int { return func() int { return n.n } }()
+}
+
+// --- Criterion 4, the copy cost ---------------------------------------------
+
+// Wide is one byte over the 128-byte default bound, so copying it per call is
+// not free and the remedy is not takable: nothing is reported.
+type Wide struct{ table [129]byte }
+
+func (w *Wide) First() byte { return w.table[0] }
+
+// AtBound is exactly the default bound, which is the reported side of it. The
+// pair is what pins the default: shift the bound either way and one of them
+// changes verdict.
+type AtBound struct{ table [128]byte }
+
+func (a *AtBound) First() byte { return a.table[0] } // want `pointer receiver on AtBound should be a value receiver`
+
+// Matcher is the shape measured on compress/flate: an array field multiplies
+// the copy by its LENGTH, which nothing in criterion 1 walks. 128 KiB per call.
+type Matcher struct {
+	table [1 << 15]uint32
+	n     int
+}
+
+func (m *Matcher) Find(h uint32) uint32 { return m.table[h&0x7fff] }
+
+// WideGuarded is over the bound AND holds a mutex, so it is exempt twice over;
+// the point is that the size check must not panic or mis-answer for it.
+type WideGuarded struct {
+	mu    sync.Mutex
+	table [256]byte
+}
+
+func (w *WideGuarded) First() byte { return w.table[0] }
+
+// --- The Locker shape's two members ------------------------------------------
+
+// HalfLock has a nullary pointer Lock and no Unlock, so it is not the vet
+// copylocks shape and stays reported. Dropping Unlock from the shape silences
+// it.
+type HalfLock struct{ n int }
+
+func (h *HalfLock) Lock() {} // want `pointer receiver on HalfLock should be a value receiver`
+
+func (h *HalfLock) N() int { return h.n } // want `pointer receiver on HalfLock should be a value receiver`
+
+// HalfUnlock is the same on the other member.
+type HalfUnlock struct{ n int }
+
+func (h *HalfUnlock) Unlock() {} // want `pointer receiver on HalfUnlock should be a value receiver`
+
+func (h *HalfUnlock) N() int { return h.n } // want `pointer receiver on HalfUnlock should be a value receiver`
+
+// ArgLock has both names with the right result and a PARAMETER, so neither is
+// nullary and the shape is not satisfied.
+type ArgLock struct{ n int }
+
+func (a *ArgLock) Lock(timeout int) {} // want `pointer receiver on ArgLock should be a value receiver`
+
+func (a *ArgLock) Unlock(timeout int) {} // want `pointer receiver on ArgLock should be a value receiver`
+
+func (a *ArgLock) N() int { return a.n } // want `pointer receiver on ArgLock should be a value receiver`
+
+// --- UnmarshalXML's second parameter and the yaml callback's arity ----------
+
+// XMLBound implements encoding/xml.Unmarshaler with the parameter list the
+// interface dictates, so its pointer receiver is dictated too.
+type XMLBound struct{ v string }
+
+func (x *XMLBound) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error { return nil }
+
+// XMLForged has the name, the decoder and a second parameter no interface
+// declares. Accepting it would exempt any method willing to take a *xml.Decoder
+// and anything at all beside it.
+type XMLForged struct{ v string }
+
+func (x *XMLForged) UnmarshalXML(d *xml.Decoder, start int) error { return nil } // want `pointer receiver on XMLForged should be a value receiver`
+
+// XMLWrongDecoder has the name, a right SECOND parameter and a first parameter
+// no interface declares. Both parameters are the contract, so a case is needed
+// per position or one of them is free.
+type XMLWrongDecoder struct{ v string }
+
+func (x *XMLWrongDecoder) UnmarshalXML(d int, start xml.StartElement) error { return nil } // want `pointer receiver on XMLWrongDecoder should be a value receiver`
+
+// YAMLBytes is goccy/go-yaml's BytesUnmarshaler, the third UnmarshalYAML shape.
+type YAMLBytes struct{ v string }
+
+func (y *YAMLBytes) UnmarshalYAML(b []byte) error { return nil }
+
+// YAMLVariadic's callback is variadic, so its one parameter has type []any
+// rather than any: it is not `func(any) error` and yaml.v2 would never call it.
+type YAMLVariadic struct{ v string }
+
+func (y *YAMLVariadic) UnmarshalYAML(unmarshal func(...any) error) error { return nil } // want `pointer receiver on YAMLVariadic should be a value receiver`
+
+// --- The package-under-analysis exclusion, declared-here side ----------------
+
+// localAPI's own read-only method is the shape that makes the exclusion
+// visible: inside the package that DECLARES it, a pointer-only API is judged
+// like any other type, which is why bytes.Buffer's own Len is reported when the
+// standard library is the tree under analysis. Applying the derivation here
+// instead would exempt every type all of whose methods take pointers, which is
+// the shape this rule exists to report.
+func (l *localAPI) N() int { return l.n } // want `pointer receiver on localAPI should be a value receiver`

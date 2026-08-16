@@ -161,9 +161,16 @@ func isRune(t types.Type) bool {
 
 // isUnmarshalFunc reports whether t is `func(any) error`, the callback
 // gopkg.in/yaml.v2's UnmarshalYAML receives.
+//
+// It does not ask whether the signature is VARIADIC, because nothing can answer
+// yes: a variadic parameter's type is a SLICE, so `func(...any) error` has one
+// parameter of type []any and the isAny test below already refuses it. Measured
+// by deleting the condition — every fixture and every probe reported
+// identically. Dead defensive code is removed rather than defended by a case no
+// input can write.
 func isUnmarshalFunc(t types.Type) bool {
 	sig, ok := types.Unalias(t).(*types.Signature)
-	if !ok || sig.Variadic() || sig.Params().Len() != 1 || sig.Results().Len() != 1 {
+	if !ok || sig.Params().Len() != 1 || sig.Results().Len() != 1 {
 		return false
 	}
 	return isAny(sig.Params().At(0).Type()) && isBuiltinError(sig.Results().At(0).Type())

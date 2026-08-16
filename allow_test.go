@@ -92,6 +92,30 @@ func TestIsImportPathRefusesASegmentNoPackageCanHave(t *testing.T) {
 	assert.False(t, isImportPath("exam\nple.com/x"), "of any kind")
 }
 
+// TestSplitQualifiedCutsAtTheFinalDotAndRefusesAnEmptyHalf names the split's own
+// contract, which parseAllowEntry's later checks hide: isImportPath and
+// token.IsIdentifier refuse the same two inputs the boundary conditions do, so
+// no -allow value can tell a sound split from one that returns an empty path or
+// an empty name. The contract is still the split's to keep, and it is asserted
+// where it is decided rather than left to a caller that happens to agree.
+func TestSplitQualifiedCutsAtTheFinalDotAndRefusesAnEmptyHalf(t *testing.T) {
+	t.Parallel()
+
+	path, name, isQualified := splitQualified("example.com/pkg.Type")
+	assert.True(t, isQualified)
+	assert.Equal(t, packagePath("example.com/pkg"), path, "the FINAL dot is the separator")
+	assert.Equal(t, typeName("Type"), name)
+
+	_, _, isQualified = splitQualified(".Pool")
+	assert.False(t, isQualified, "a leading dot leaves no path")
+
+	_, _, isQualified = splitQualified("example.com/pkg.")
+	assert.False(t, isQualified, "a trailing dot leaves no name")
+
+	_, _, isQualified = splitQualified("Pool")
+	assert.False(t, isQualified, "and a name with no dot is not qualified at all")
+}
+
 // TestAllowListSetIsTheFlagAndTheLookup names what the flag.Value does with a
 // value it accepts: it keeps the raw text for the flag package to print, and it
 // yields the set isNoCopy looks up. flag.StringVar's Set cannot fail, which is

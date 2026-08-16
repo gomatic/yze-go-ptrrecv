@@ -9,16 +9,16 @@ import (
 )
 
 // Deciding whether a type must not be copied, which is what makes a pointer
-// receiver justified. The --fix path rewrites receivers this file judges
-// unjustified into VALUE receivers, so a false negative here does not produce a
-// wrong diagnostic — it hands the compiler permission to copy a mutex, which is
-// a data race the author never wrote.
+// receiver justified. A false negative here does not produce a merely noisy
+// diagnostic — it tells the author to copy a mutex, which is a data race the
+// tool asked for and the author never wrote. So this file errs toward silence,
+// and every criterion in it is written in that direction.
 //
 // The criterion is DERIVED from the types themselves, never from a table of
 // names. A hand-maintained list is short by exactly the amount its author did
 // not think of: the list this file used to carry named seventeen types and
 // omitted bufio.Writer, bufio.Reader, bufio.Scanner and math/rand.Rand, so the
-// analyzer reported a bufio.Writer holder AND rewrote it to a value receiver,
+// analyzer reported a bufio.Writer holder and prescribed a value receiver,
 // duplicating the byte count and the error while both copies shared one backing
 // array. All seventeen entries are subsumed by stdlibNoCopy below, measured by
 // deleting the map and comparing output.
@@ -30,11 +30,13 @@ type packagePath string
 type typeName string
 
 // judgement is the copy-semantics decision for one package: the configured
-// allow-list, and the package under analysis (which is never stdlib, whatever
-// its import path looks like).
+// allow-list, the package under analysis (which is never stdlib, whatever its
+// import path looks like), its module, and the platform sizes the copy cost in
+// size.go is measured against.
 type judgement struct {
 	allow  allowSet
 	own    *types.Package
+	sizes  types.Sizes
 	module packagePath
 }
 
@@ -66,6 +68,24 @@ func (j judgement) requiresPointer(t types.Type) bool {
 // exempted anyway. That is the direction this file's header demands — a missed
 // diagnostic costs a finding, a wrong one hands the compiler permission to copy
 // a mutex.
+//
+// IT DOES NOT APPLY TO A TYPE THE PACKAGE UNDER ANALYSIS DECLARES, and cannot.
+// The criterion is "every method takes a pointer", which is the very shape this
+// rule reports, so asking it of the package's own types would exempt every type
+// all of whose methods are pointer methods — the rule would answer itself.
+// Measured by deleting `named.Obj().Pkg() == j.own`: 24 of the fixture's
+// expectations go silent, Timed, Scalar, SliceGuarded, Honest, Setting and
+// NoErr among them, and the finding count over the Go 1.26.6 standard library
+// falls from 1709 locations to 161.
+//
+// The exclusion has a visible cost and it is stated rather than hidden: when
+// the standard library IS the tree under analysis, bytes.Buffer's and
+// strings.Builder's own read-only methods are reported — nine locations, on
+// the two types the package doc names as exempt. Nothing else reaches it,
+// because every other module's own packages are excluded by isStdlib below
+// before this criterion is consulted. localAPI/LocalHolder in the fixture is
+// the declared-here side of that boundary and Buffered/bytes.Buffer the
+// foreign side.
 func (j judgement) stdlibNoCopy(t types.Type) bool {
 	named, ok := types.Unalias(t).(*types.Named)
 	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg() == j.own {
@@ -118,7 +138,7 @@ func modulePath(pass *analysis.Pass) packagePath {
 
 // isTypeParam reports whether t is a type parameter. An unconstrained (or
 // merely unknowable) type parameter may be instantiated with no-copy machinery
-// — Box[sync.Mutex] — and the --fix path would rewrite the receiver into one
+// — Box[sync.Mutex] — and the value receiver this rule would prescribe is one
 // the compiler happily copies, a data race the author never wrote. The pointer
 // receiver conservatively stands, the same line valuector draws for
 // type-parameter fields in constructed types.

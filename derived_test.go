@@ -45,6 +45,15 @@ type T struct{ b over }`), "and a struct holding one holds it inline")
 
 	_, isDefinedOver := judgement{}.originOf(types.Typ[types.Int])
 	assert.False(t, isDefinedOver, "only a struct can have been defined over another package's")
+
+	own := checkedAt(t, "mypkg", "type Thing struct{ n int }")
+	field := own.Scope().Lookup("Thing").Type().Underlying().(*types.Struct).Field(0)
+	assert.False(t, judgement{own: own}.isForeignField(field),
+		"a field of the package under analysis is not foreign, however standard-library its dotless path reads")
+	assert.True(t, judgement{}.isForeignField(field),
+		"and the SAME field is foreign to any other package, which is what that comparison decides "+
+			"and what no -allow value or fixture can tell apart, because the type it finds is then "+
+			"answered by stdlibNoCopy, which stands down on the package under analysis too")
 }
 
 // TestTypeWithUnderlyingAnswersWhenThereIsNothingToFind names the search's empty
@@ -65,5 +74,15 @@ func TestTypeWithUnderlyingAnswersWhenThereIsNothingToFind(t *testing.T) {
 
 	found, isFound := typeWithUnderlying(pkg, pkg.Scope().Lookup("Thing").Type().Underlying().(*types.Struct))
 	assert.True(t, isFound, "and the package's own struct finds the type that has it")
+	assert.Equal(t, "example.com/x.Thing", found.String())
+
+	twin := types.NewStruct([]*types.Var{
+		types.NewField(0, pkg, "n", types.Typ[types.Int], false),
+	}, nil)
+	found, isFound = typeWithUnderlying(pkg, twin)
+	assert.True(t, isFound,
+		"the search matches by STRUCTURE, not by object identity: a struct rebuilt with the "+
+			"same fields is the same type, and a pointer comparison would answer no to it — "+
+			"which is the distinction this analyzer already had to fix once for the error result")
 	assert.Equal(t, "example.com/x.Thing", found.String())
 }

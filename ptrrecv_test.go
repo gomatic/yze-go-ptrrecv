@@ -10,14 +10,37 @@ import (
 	ptrrecv "github.com/gomatic/yze-go-ptrrecv"
 )
 
-// TestCheckReportsOnlyReceiversItCanRewriteAndAlwaysAttachesTheFix names
-// check's claim, which the golden files are the evidence for: every diagnostic
-// carries the value-receiver rewrite, because being able to rewrite it IS the
-// condition for reporting it. A receiver the analyzer cannot rewrite is one the
-// author cannot change either, and a diagnostic naming a remedy nobody can take
-// is answered with a baseline rather than a fix.
-func TestCheckReportsOnlyReceiversItCanRewriteAndAlwaysAttachesTheFix(t *testing.T) {
-	analysistest.RunWithSuggestedFixes(t, analysistest.TestData(), ptrrecv.Analyzer, "a", "c")
+// TestCheckReportsOnlyAPointerNothingRequires names check's claim: a receiver is
+// reported only when nothing requires the pointer — no uncopyable machinery, no
+// decode contract, a body whose reads survive the rewrite, and a receiver small
+// enough to copy. Package a holds a case for each criterion in both directions.
+func TestCheckReportsOnlyAPointerNothingRequires(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), ptrrecv.Analyzer, "a", "c")
+}
+
+// TestAnalyzerAttachesNoSuggestedFix pins the deliberate absence of the rewrite,
+// which is a promise of the package doc comment and is invisible to every
+// fixture: a diagnostic looks the same with a fix attached and without one.
+//
+// Deleting the `*` moves the method into the value type's method set, and what
+// that costs is decided in packages this analyzer never loads. Measured before
+// the fix was withdrawn, each end to end with `go vet` exit 0: a *Money
+// MarshalJSON held by value took json.Marshal from {"Total":{"Cents":1234}} to
+// {"Total":"12.34"}; a *Temp String took fmt.Println(Temp{21}) from {21} to 21C;
+// and applying it across GOROOT made compress/flate die of a stack overflow in
+// its own TestMaxStackSize.
+func TestAnalyzerAttachesNoSuggestedFix(t *testing.T) {
+	results := analysistest.Run(t, analysistest.TestData(), ptrrecv.Analyzer, "a")
+	require.NotEmpty(t, results)
+
+	reported := 0
+	for _, result := range results {
+		for _, diagnostic := range result.Diagnostics {
+			reported++
+			assert.Empty(t, diagnostic.SuggestedFixes, "no diagnostic may carry a rewrite: %s", diagnostic.Message)
+		}
+	}
+	assert.Positive(t, reported, "the fixture must report, or the assertion above is vacuous")
 }
 
 func TestRegistrationIsWellFormed(t *testing.T) {
