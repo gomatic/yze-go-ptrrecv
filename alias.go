@@ -14,8 +14,10 @@ import (
 // read of the receiver after a point where something else could have written
 // through another alias observes a DIFFERENT value once the receiver is a value.
 //
-// REPRODUCED twice, each built and run end to end with `go vet ./...` silent
-// before and after. A CALLBACK, with no package state anywhere:
+// REPRODUCED four times, each built and run end to end with `go vet ./...`
+// silent before and after; the last two were found while fixing the first two,
+// which is why barrier.go enumerates what can change the object rather than
+// reasoning about it. A CALLBACK, with no package state anywhere:
 //
 //	func (c *C) WithStep(step Step) Count { step(); return c.n }
 //	c.WithStep(func() { c.n = 99 })
@@ -28,26 +30,25 @@ import (
 //	func bump()              { registered.n = 99 }
 //	func (c *C) Late() Count { bump(); return c.n }
 //
-// was reported, and the same edit took "late sees: 99" to "late sees: 1".
+// was reported, and the same edit took "late sees: 99" to "late sees: 1". A
+// RANGE OVER AN ITERATOR, whose call appears nowhere in the AST because the
+// compiler synthesises the yield, took "sum: 100" to "sum: 2". And a WRITE
+// THROUGH AN ALIAS with no call, no function literal and no defer anywhere in
+// the method — `live.n = 99; sink = c.n` — took "sink: 99" to "sink: 1".
 //
 // No function literal appears in the second, and in the first the literal is at
 // the CALL SITE in another function, so the escaping-literal clause reaches
 // neither. Whether anything else holds an alias is undecidable in one pass —
 // the same undecidability that withdrew the SuggestedFix — but here it falls on
 // the REPORT, because rewriteSafe IS the reporting condition. So the body is
-// judged on what it can see: a read the method makes after handing control
-// somewhere it cannot follow is withheld. A method taking a callback (ForEach,
+// judged on what it can see: a read the method makes after anything barrier.go
+// calls a barrier is withheld. A method taking a callback (ForEach,
 // Walk, WithLock) or reading a field after any call is an ordinary shape, and
 // the cost of this is findings, which is the direction this analyzer is
 // conservative in everywhere else — 266 of the 1431 source-only locations the
 // rule reported across the Go 1.26.6 standard library, measured as a sorted
 // projection of `-json std` on both binaries, with nothing added and zero
 // packages failing to load in either run.
-
-// closeBuiltin is the one builtin that hands control to other code: closing a
-// channel wakes every goroutine blocked on it, and any of them may hold an
-// alias. Every other builtin computes and returns.
-const closeBuiltin = "close"
 
 // aliasSafe reports whether every read of the receiver in the body happens
 // before anything beyond this walk's reach could have written to the object.
@@ -102,8 +103,9 @@ func (w bodyWalk) observesOnALaterTurn(root ast.Node) bool {
 // of the loop: a condition reading the receiver and a body calling out is the
 // same hazard as the reverse.
 //
-// The loop statement's OWN barrier — a range over a channel — is deliberately
-// not consulted here, and measured to be subsumed: its position is the end of
+// The loop statement's OWN barrier — a range over a channel or an iterator — is
+// deliberately not consulted here, and measured to be subsumed: its position is
+// the end of
 // the ranged expression, which every part that repeats sits after, so
 // observesAfter has already answered. Adding the disjunct back changes no
 // fixture's verdict.

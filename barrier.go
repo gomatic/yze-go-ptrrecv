@@ -12,9 +12,14 @@ import (
 	"go/types"
 )
 
-// firstBarrier is the earliest position at which control has come back from
-// somewhere beyond this walk's reach, or token.NoPos for a body that stays
-// inside it.
+// closeBuiltin is the one builtin that hands control to other code: closing a
+// channel wakes every goroutine blocked on it, and any of them may hold an
+// alias. Every other builtin computes and returns.
+const closeBuiltin = "close"
+
+// firstBarrier is the earliest position past which the object may no longer hold
+// what it held when the call began, or token.NoPos for a body that leaves it
+// alone.
 func (w bodyWalk) firstBarrier(root ast.Node) token.Pos {
 	first := token.NoPos
 	ast.Inspect(root, func(n ast.Node) bool {
@@ -27,16 +32,16 @@ func (w bodyWalk) firstBarrier(root ast.Node) token.Pos {
 	return first
 }
 
-// hasBarrier reports whether a subtree hands control anywhere beyond this
-// walk's reach.
+// hasBarrier reports whether a subtree holds any barrier at all.
 func (w bodyWalk) hasBarrier(root ast.Node) bool { return w.firstBarrier(root).IsValid() }
 
-// barrierEnd is the position at which control returns from a node that hands it
-// away, and token.NoPos for every other node. A call's is its closing paren,
-// because arguments are evaluated before the call and a receiver read among them
-// is a read the call has not yet had a chance to disturb. A channel operation's
-// is its own end: another goroutine holding an alias may run at it, and a range
-// over a channel receives once per turn.
+// barrierEnd is the position past which a node's effect is done, and token.NoPos
+// for a node that is no barrier. A call's is its closing paren, because
+// arguments are evaluated before the call and a receiver read among them is a
+// read the call has not yet had a chance to disturb. A channel operation's is
+// its own end: another goroutine holding an alias may run at it, and a range
+// receives or calls its iterator once per turn. An assignment's is its own end
+// when what it writes to is storage the caller may share.
 func (w bodyWalk) barrierEnd(n ast.Node) token.Pos {
 	switch x := n.(type) {
 	case *ast.CallExpr:
