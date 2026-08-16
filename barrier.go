@@ -114,6 +114,12 @@ func (w bodyWalk) writeBarrier(end token.Pos, targets ...ast.Expr) token.Pos {
 // Anything reached by dereferencing a pointer, indexing a slice or reading a map
 // can, and so can a package-level variable, which is what `var live *C` and
 // `live.n = 99` are made of.
+//
+// A dereference — `*p = 1` — needs no case of its own and is measured not to
+// have one: it falls to the default, where a StarExpr is not an identifier, so
+// it names no variable this function declares and the answer is already the
+// conservative one. Deleting a `case *ast.StarExpr: return true` written here
+// changed no fixture's verdict, which is what put this paragraph here instead.
 func (w bodyWalk) writesWhereTheCallerCanSee(target ast.Expr) bool {
 	for {
 		switch x := target.(type) {
@@ -130,12 +136,6 @@ func (w bodyWalk) writesWhereTheCallerCanSee(target ast.Expr) bool {
 		}
 	}
 }
-
-// A dereference — `*p = 1` — needs no case of its own and is measured not to
-// have one: it falls to the default, where a StarExpr is not an identifier, so
-// it names no variable this function declares and the answer is already the
-// conservative one. Deleting a `case *ast.StarExpr: return true` written above
-// changed no fixture's verdict, which is what put this paragraph here instead.
 
 // throughIndirection is the inner expression to keep walking, or nil — which
 // writesWhereTheCallerCanSee reads as "the caller can see this" — when the link
