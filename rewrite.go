@@ -39,6 +39,7 @@ func rewriteSafe(pass *analysis.Pass, fn *ast.FuncDecl) bool {
 	walk := bodyWalk{
 		info:      pass.TypesInfo,
 		recv:      recv,
+		base:      pointedAt(recv),
 		contained: containedFuncLits(fn.Body),
 	}
 	return walk.nodeSafe(fn.Body) && walk.aliasSafe(fn.Body)
@@ -55,12 +56,26 @@ func receiverObject(pass *analysis.Pass, fn *ast.FuncDecl) types.Object {
 }
 
 // bodyWalk is one method body's decision context: the pass's type information,
-// the receiver object every use is compared against, and the function literals
-// that cannot outlive the call.
+// the receiver object every use is compared against, the type it points at, and
+// the function literals that cannot outlive the call.
 type bodyWalk struct {
 	info      *types.Info
 	recv      types.Object
+	base      types.Type
 	contained map[*ast.FuncLit]bool
+}
+
+// pointedAt is the type the receiver points at, which is what a write has to be
+// able to reach before it can disturb what the method observes. Every receiver
+// this analyzer looks at is written *T, so the assertion holds; a receiver
+// whose type the pass could not resolve yields nil, which barrier.go reads as
+// "anything could reach it".
+func pointedAt(recv types.Object) types.Type {
+	pointer, isPointer := types.Unalias(recv.Type()).(*types.Pointer)
+	if !isPointer {
+		return nil
+	}
+	return pointer.Elem()
 }
 
 // nodeSafe walks a subtree (the method body, or an index expression inside a

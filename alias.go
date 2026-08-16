@@ -45,7 +45,7 @@ import (
 // calls a barrier is withheld. A method taking a callback (ForEach,
 // Walk, WithLock) or reading a field after any call is an ordinary shape, and
 // the cost of this is findings, which is the direction this analyzer is
-// conservative in everywhere else — 266 of the 1431 source-only locations the
+// conservative in everywhere else — 273 of the 1431 source-only locations the
 // rule reported across the Go 1.26.6 standard library, measured as a sorted
 // projection of `-json std` on both binaries, with nothing added and zero
 // packages failing to load in either run.

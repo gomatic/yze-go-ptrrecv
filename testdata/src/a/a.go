@@ -1128,3 +1128,144 @@ func (w *WriteThroughAParenthesizedDereference) Reset(other *int) int {
 	(*other) = 1
 	return w.n
 }
+
+// --- The writing builtins, and what a write can actually reach ---------------
+
+// CopyThroughAnAlias writes into another instance's inline array with `copy`,
+// which is a write with no assignment statement to carry it. Called as
+// c.FillFrom(c, …) the two are the same object: it was reported, and deleting
+// the star took "fill sees: 7" to "fill sees: 0" with go vet silent both ways.
+type CopyThroughAnAlias struct {
+	buf [8]byte
+	n   int
+}
+
+func (c *CopyThroughAnAlias) FillFrom(other *CopyThroughAnAlias, src []byte) byte {
+	copy(other.buf[:], src)
+	return c.buf[0]
+}
+
+func (c *CopyThroughAnAlias) ClearOther(other *CopyThroughAnAlias) byte {
+	clear(other.buf[:])
+	return c.buf[0]
+}
+
+func (c *CopyThroughAnAlias) AppendOther(other *[]byte) byte {
+	*other = append(*other, 1)
+	return c.buf[0]
+}
+
+func (c *CopyThroughAnAlias) DeleteOther(other map[string]int) byte {
+	delete(other, "k")
+	return c.buf[0]
+}
+
+// CopyIntoLocalStorage is the other side of every builtin above: a builtin
+// writing into storage this method declares reaches nothing the caller holds, so
+// the read that follows stands and the clause is not "any builtin at all".
+type CopyIntoLocalStorage struct {
+	buf [8]byte
+	n   int
+}
+
+func (c *CopyIntoLocalStorage) Head(src []byte) byte { // want `pointer receiver on CopyIntoLocalStorage should be a value receiver`
+	var local [8]byte
+	copy(local[:], src)
+	clear(local[:])
+	return local[0] + c.buf[0]
+}
+
+// RangeAssignsThroughAnAlias writes its iteration variable into a package alias
+// once per turn, which no assignment statement carries either: it was reported,
+// and deleting the star took "range-assign sees: 2" to "range-assign sees: 1".
+type RangeAssignsThroughAnAlias struct{ n int }
+
+var rangeAlias *RangeAssignsThroughAnAlias
+
+func (r *RangeAssignsThroughAnAlias) Count(xs []int) int {
+	for rangeAlias.n = range xs {
+	}
+	return r.n
+}
+
+// unrelatedCalls is a package-level counter of a type no receiver here is
+// reachable from.
+var unrelatedCalls int
+
+// hits is the same thing behind a map.
+var hits = map[string]int{}
+
+// WritesSomethingUnrelated bumps a package-level int and then reads its
+// receiver. The int is outside the function and outside the method, and it still
+// cannot be the receiver or hold one, so it is no barrier — withholding this was
+// the absurd end of asking only WHERE storage lives and never what is in it.
+type WritesSomethingUnrelated struct{ n int }
+
+func (u *WritesSomethingUnrelated) Counted() int { // want `pointer receiver on WritesSomethingUnrelated should be a value receiver`
+	unrelatedCalls++
+	unrelatedCalls = unrelatedCalls + 1
+	return u.n
+}
+
+// treeNode is self-referential, which is the ordinary shape of any tree and the
+// shape that makes the type walk recur forever without its seen set.
+type treeNode struct {
+	next  *treeNode
+	label string
+}
+
+// forest is a package-level one, written directly so the walk starts from it.
+var forest treeNode
+
+// WalksASelfReferentialType writes a package-level variable whose type points at
+// itself. Reaching the receiver from it is decided by walking the type, and the
+// walk revisits treeNode through its own field: without the seen set the
+// analyzer never returns.
+type WalksASelfReferentialType struct{ n int }
+
+func (s *WalksASelfReferentialType) Read() int { // want `pointer receiver on WalksASelfReferentialType should be a value receiver`
+	forest.label = "x"
+	return s.n
+}
+
+// HoldsTheReceiverBehindACycle is the other side: the self-referential type
+// reaches the receiver's own, so writing it IS a barrier and the walk must not
+// stop early at the cycle.
+type HoldsTheReceiverBehindACycle struct{ n int }
+
+type cycleHolder struct {
+	next *cycleHolder
+	held *HoldsTheReceiverBehindACycle
+}
+
+var holder cycleHolder
+
+func (h *HoldsTheReceiverBehindACycle) Read() int {
+	holder.next = nil
+	return h.n
+}
+
+// --- Criterion 4 on a generic receiver, through the analyzer -----------------
+
+// wideTable is 128 KiB.
+type wideTable [1 << 15]uint32
+
+// BoxedWide carries its type parameter behind a POINTER, so nothing in criterion
+// 1 withholds it — a by-value parameter would — and the size criterion is asked
+// about a generic receiver for the first time. Declining to measure one is what
+// turned this criterion off for anything carrying a parameter at all.
+type BoxedWide[T any] struct {
+	table wideTable
+	held  *T
+}
+
+func (b *BoxedWide[T]) Find(i int) uint32 { return b.table[i] }
+
+// BoxedNarrow is the same shape under the bound, so the pair pins that a generic
+// receiver is judged rather than exempted wholesale.
+type BoxedNarrow[T any] struct {
+	a    [16]byte
+	held *T
+}
+
+func (b *BoxedNarrow[T]) First() byte { return b.a[0] } // want `pointer receiver on BoxedNarrow should be a value receiver`

@@ -45,9 +45,22 @@ import (
 // That is a rule green on the developer's machine and red in a cross-compiled
 // CI, whose only available answer is a disablement, and a remedy taken to
 // satisfy one platform's verdict is a value receiver the other never asked for.
-// A gate gives one answer, so the layout is the analyzer's and is named here.
-// 64-bit is the layout the fleet builds and ships on; a 32-bit target reads a
-// verdict about the 64-bit copy, which is the wider of the two.
+// So the layout is the analyzer's and is named here. 64-bit is the layout the
+// fleet builds and ships on; a 32-bit target reads a verdict about the 64-bit
+// copy, which is the wider of the two.
+//
+// WHAT THIS DOES NOT FIX, because nothing in an analyzer can: a type whose own
+// DIMENSIONS come from a platform-dependent constant is a different type on each
+// platform before this package sees it. `const words = 20 * unsafe.Sizeof(
+// uintptr(0)); type Buf struct{ b [words]byte; n int }` is `[160]byte` on a
+// 64-bit target and `[80]byte` on a 32-bit one — the type-checker folds the
+// constant with the DRIVER's sizes, and the array length is baked into the
+// types.Array handed to the pass. MEASURED on one untagged file: silent under
+// GOOS=linux GOARCH=amd64, reported under GOARCH=386 and GOARCH=arm, on this
+// build and on the one before it alike. Normalising the layout makes the same
+// type measure the same everywhere; it cannot make two types one. Recorded
+// rather than hidden, because the fix's own claim would otherwise read as
+// covering it.
 const judgedArch = "amd64"
 
 // judgedSizes is judgedArch's type layout, the only sizes any verdict is
@@ -80,6 +93,15 @@ type receiverBytes int64
 // counted and nothing ratcheted. 0 is not a smaller bound but a different rule:
 // copyIsCostly is `> max`, so at 0 the survivors are exactly the receivers that
 // occupy no memory at all.
+//
+// The floor bounds the incoherent values, not the disabling ones, and the
+// difference is measured: `-max=8`, the narrowest bound this guard accepts, takes
+// the standard library from 1158 source-only locations to 93. Lowering the bound
+// inside the permitted range is a disablement channel like every other setting
+// here, and how far it may move is a quota question the owner sets — recorded as
+// k1n8213w, not decided here. What the floor buys is that a bound can no longer
+// mean "judge nothing that occupies memory", which is not a smaller bound but a
+// different rule.
 var pointerBytes = receiverBytes(judgedSizes.Sizeof(types.Typ[types.UnsafePointer]))
 
 // defaultMaxCopy is the widest receiver whose copy this rule still calls free.
@@ -163,11 +185,28 @@ func (j judgement) narrowestBytes(t types.Type) (receiverBytes, bool) {
 // unused T was REPORTED — and the remedy, built and run, took two million calls
 // of its read-only Find from 977.167µs to 26.779913458s.
 //
-// Substituting is sound where declining is not because the substitution can
-// only make the type NARROWER: the bound is `wider than max`, so a receiver
-// withheld on its narrowest instance is withheld on every instance, and one
-// reported on its narrowest may still be wide once instantiated — which is the
-// direction this rule is conservative in everywhere else.
+// Substituting is sound because it can only make the type NARROWER: the bound
+// is `wider than max`, so a receiver withheld on its narrowest instance is
+// withheld on every instance, and one reported on its narrowest may still be
+// wide once instantiated — which is the direction this rule is conservative in
+// everywhere else.
+//
+// WHAT IT IS WORTH, measured rather than argued, because the number is smaller
+// than the prose above would suggest. Replacing the substitution with the bare
+// type changes NO verdict the analyzer reaches: over Go 1.26.6 the sorted
+// location sets are identical, and every fixture reports the same. The reason is
+// a coupling with copy.go — componentsRequirePointer withholds every receiver
+// with a by-value type parameter component, which is precisely the shape
+// go/types refuses to size, so reportable never asks copyIsCostly a question the
+// substitution would answer differently. The load-bearing half of this fix is
+// that a generic receiver is MEASURED AT ALL rather than declined.
+//
+// It is kept because it makes copyIsCostly total: a function whose only
+// precondition is enforced by a different file, with nothing asserting the
+// coupling, is one refactor in copy.go away from a panic in a rule the whole
+// fleet runs. The test that pins it calls copyIsCostly directly, which is the
+// only caller that can reach the branch, and that is stated rather than dressed
+// up as an end-to-end case.
 func narrowestInstance(t types.Type) (types.Type, bool) {
 	named, isNamed := types.Unalias(t).(*types.Named)
 	if !isNamed || named.TypeParams().Len() == 0 {

@@ -108,8 +108,8 @@
 //     to 1. A read in a loop or a `defer` counts as following the barrier
 //     however early it is written; arguments are evaluated before their call
 //     and do not. alias.go carries the two reproductions, and the cost of the
-//     clause is 266 of the 1431 source-only locations this rule reported across
-//     the Go 1.26.6 standard library, and 290 of the 1709 with test files.
+//     clause is 273 of the 1431 source-only locations this rule reported across
+//     the Go 1.26.6 standard library, and 298 of the 1709 with test files.
 //
 //  4. The receiver is small enough to copy — at most the -max bound (below),
 //     128 bytes by default. Nothing in (1) asks how BIG a type is, so a
@@ -117,21 +117,25 @@
 //     receiver on the resulting 640 KiB struct overflows the goroutine stack.
 //     size.go carries the reproduction and the measurement behind the default.
 //
-//     THE WIDTH IS MEASURED ON A STATED LAYOUT, gc/amd64, and never on the
-//     platform under analysis. A width made of words moves with GOARCH while
-//     the bound is in bytes, so the driver's own sizes make the VERDICT move:
-//     `struct{ w [20]uintptr; n int }` is 168 bytes on a 64-bit target and 84
-//     on a 32-bit one, and the same binary on the same untagged file was silent
-//     under GOARCH=amd64 and reported under GOARCH=386. A gate gives one
-//     answer.
+//     THE WIDTH IS MEASURED ON A STATED LAYOUT, gc/amd64, and not on the
+//     platform under analysis. A width made of words moves with GOARCH while the
+//     bound is in bytes, so the driver's own sizes make the VERDICT move:
+//     `struct{ w [20]uintptr; n int }` is 168 bytes on a 64-bit target and 84 on
+//     a 32-bit one, and the same binary on the same untagged file was silent
+//     under GOARCH=amd64 and reported under GOARCH=386. One TYPE now measures
+//     the same everywhere, which is all a layout can buy: a type whose own
+//     dimensions come from a platform-dependent constant is a different type
+//     before this analyzer sees it, and size.go records that residue.
 //
-//     A GENERIC RECEIVER IS MEASURED ON ITS NARROWEST INSTANCE, with the empty
+//     A GENERIC RECEIVER IS MEASURED, on its narrowest instance, with the empty
 //     struct substituted for every type parameter it stands on. Declining to
 //     measure it — which is what a type parameter's absent width used to buy —
 //     turned this criterion off for anything carrying one: a `[T any]` on the
 //     declaration took a 131080-byte receiver from withheld to reported, and
 //     the remedy from 977µs to 26.8s over two million calls. A width go/types
-//     will not state, which only a generic declaration reaches, is costly.
+//     will not state, which only a generic declaration reaches, is costly. The
+//     substitution itself changes no verdict this analyzer reaches, which
+//     size.go measures rather than assumes.
 //
 // # There is no automatic rewrite, deliberately
 //
@@ -154,8 +158,8 @@
 // takes fmt.Println(Temp{21}) from {21} to 21C and a fmt.Stringer assertion on
 // a Temp value from false to true; and on the standard library itself, %v of a
 // strings.Builder VALUE starts printing its contents. Re-measured on Go 1.26.6
-// with criterion (3)'s alias clause in force: this rule reports 1419 receivers
-// with test files included and 1165 without, and 272 of them carry a method
+// with criterion (3)'s alias clause in force: this rule reports 1411 receivers
+// with test files included and 1158 without, and 272 of them carry a method
 // name belonging to a published interface — 55 Error, 45 String, 32 Size, 23
 // Len, 21 Close, 21 Unwrap, 19 Read, 17 Write and the rest — which is an upper
 // bound on the exposure and not a count of harmful ones. The three figures were
