@@ -1,16 +1,16 @@
 package ptrrecv
 
-// What counts as a BARRIER: a point at which the object the receiver points at
-// may have changed since the call began. Everything alias.go decides is decided
-// against one of these, and the set is the whole content of the clause — each
-// member below was reproduced as a program whose answer changes when the star is
-// deleted, not reasoned about.
-
 import (
 	"go/ast"
 	"go/token"
 	"go/types"
 )
+
+// What counts as a BARRIER: a point at which the object the receiver points at
+// may have changed since the call began. Everything alias.go decides is decided
+// against one of these, and the set is the whole content of the clause — each
+// member below was reproduced as a program whose answer changes when the star is
+// deleted, not reasoned about.
 
 // closeBuiltin is the one builtin that hands control to other code: closing a
 // channel wakes every goroutine blocked on it, and any of them may hold an

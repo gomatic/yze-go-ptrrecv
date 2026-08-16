@@ -1,14 +1,14 @@
 package ptrrecv
 
+import (
+	"go/ast"
+)
+
 // Whether a function literal in a method body can OUTLIVE the call, which is the
 // one question that makes a read of the receiver as unsafe as a write. A literal
 // captures the receiver ITSELF, so with a pointer receiver it observes the
 // caller's value live and with a value receiver it observes a copy frozen at
 // call time.
-
-import (
-	"go/ast"
-)
 
 // containedFuncLits collects the function literals in a body that cannot
 // outlive the call: a literal invoked where it is written, including under
