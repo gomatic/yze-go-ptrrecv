@@ -1,4 +1,4 @@
-# Managed by nicerobot/tools.repository (distribute-build)
+# Managed by distribute-build; edits are replaced
 name: go
 on:
   push:
@@ -32,7 +32,7 @@ on:
       - ".standards.yaml"
       - ".github/workflows/go.yml"
   schedule:
-    - cron: "0 2 * * 1"
+    - cron: "55 23 9 * *"
   workflow_dispatch:
 concurrency:
   group: go-${{ github.ref }}
